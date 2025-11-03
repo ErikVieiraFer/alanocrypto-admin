@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users as UsersIcon, Trash2, Ban, Mail } from 'lucide-react';
+import { Users as UsersIcon, Trash2, Ban, Mail, CheckCircle, XCircle } from 'lucide-react';
 import { collection, query, getDocs, doc, deleteDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import toast from 'react-hot-toast';
@@ -41,6 +41,7 @@ export default function Users() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [confirmDialog, setConfirmDialog] = useState({ open: false, user: null, action: null });
+  const [filter, setFilter] = useState('all'); // 'all', 'pending', 'approved'
 
   useEffect(() => {
     loadUsers();
@@ -54,7 +55,24 @@ export default function Users() {
         id: doc.id,
         ...doc.data()
       }));
+
+      // Ordenar: pendentes primeiro, depois aprovados
+      usersData.sort((a, b) => {
+        if (a.approved === false && b.approved === true) return -1;
+        if (a.approved === true && b.approved === false) return 1;
+        return 0;
+      });
+
       setUsers(usersData);
+
+      // Notificação de pendentes
+      const pendingCount = usersData.filter(u => !u.approved).length;
+      if (pendingCount > 0) {
+        toast.info(`${pendingCount} usuário(s) aguardando aprovação`, {
+          duration: 5000,
+          icon: '⏳',
+        });
+      }
     } catch (error) {
       console.error('Erro ao carregar usuários:', error);
       toast.error('Erro ao carregar usuários');
@@ -80,20 +98,46 @@ export default function Users() {
     try {
       const userRef = doc(db, 'users', userId);
       const newStatus = !currentStatus;
-      
+
       await updateDoc(userRef, {
         blocked: newStatus,
         blockedAt: newStatus ? new Date() : null
       });
-      
-      setUsers(users.map(u => 
+
+      setUsers(users.map(u =>
         u.id === userId ? { ...u, blocked: newStatus } : u
       ));
-      
+
       toast.success(`Usuário ${newStatus ? 'bloqueado' : 'desbloqueado'} com sucesso`);
     } catch (error) {
       console.error('Erro ao bloquear:', error);
       toast.error('Erro ao bloquear usuário');
+    }
+  };
+
+  const handleApproveUser = async (userId, userEmail, currentStatus) => {
+    try {
+      const userRef = doc(db, 'users', userId);
+      const newStatus = !currentStatus;
+
+      await updateDoc(userRef, {
+        approved: newStatus,
+        approvedAt: newStatus ? new Date() : null,
+        approvedBy: newStatus ? 'admin' : null
+      });
+
+      setUsers(users.map(u =>
+        u.id === userId ? { ...u, approved: newStatus } : u
+      ));
+
+      toast.success(
+        newStatus
+          ? `✅ ${userEmail} aprovado com sucesso!`
+          : `❌ Aprovação de ${userEmail} removida`
+      );
+    } catch (error) {
+      console.error('Erro ao aprovar:', error);
+      toast.error('Erro ao aprovar usuário');
     }
   };
 
@@ -123,16 +167,62 @@ export default function Users() {
     );
   }
 
+  // Filtro de usuários
+  const filteredUsers = users.filter(user => {
+    if (filter === 'pending') return !user.approved;
+    if (filter === 'approved') return user.approved;
+    return true; // 'all'
+  });
+
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <UsersIcon size={32} className="text-white" />
           <h1 className="text-2xl font-bold text-white">Gerenciar Usuários</h1>
+          {users.filter(u => !u.approved).length > 0 && (
+            <span className="bg-yellow-500 text-black px-3 py-1 rounded-full text-sm font-bold">
+              {users.filter(u => !u.approved).length} pendente(s)
+            </span>
+          )}
         </div>
         <div className="text-gray-400">
           Total: {users.length} usuários
         </div>
+      </div>
+
+      {/* Botões de filtro */}
+      <div className="flex gap-2 mb-6">
+        <button
+          onClick={() => setFilter('all')}
+          className={`px-4 py-2 rounded-lg transition-colors ${
+            filter === 'all'
+              ? 'bg-white text-black'
+              : 'bg-[#1e293b] text-white hover:bg-[#334155]'
+          }`}
+        >
+          Todos ({users.length})
+        </button>
+        <button
+          onClick={() => setFilter('pending')}
+          className={`px-4 py-2 rounded-lg transition-colors ${
+            filter === 'pending'
+              ? 'bg-yellow-500 text-black'
+              : 'bg-[#1e293b] text-white hover:bg-[#334155]'
+          }`}
+        >
+          Pendentes ({users.filter(u => !u.approved).length})
+        </button>
+        <button
+          onClick={() => setFilter('approved')}
+          className={`px-4 py-2 rounded-lg transition-colors ${
+            filter === 'approved'
+              ? 'bg-green-500 text-black'
+              : 'bg-[#1e293b] text-white hover:bg-[#334155]'
+          }`}
+        >
+          Aprovados ({users.filter(u => u.approved).length})
+        </button>
       </div>
 
       <div className="bg-card rounded-lg overflow-hidden">
@@ -148,7 +238,7 @@ export default function Users() {
               </tr>
             </thead>
             <tbody>
-              {users.map((user) => (
+              {filteredUsers.map((user) => (
                 <tr key={user.id} className="border-b border-gray-800 hover:bg-[#334155] transition-colors">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
@@ -169,23 +259,47 @@ export default function Users() {
                     {user.createdAt?.toDate?.().toLocaleDateString('pt-BR') || 'N/A'}
                   </td>
                   <td className="px-6 py-4">
-                    {user.blocked ? (
-                      <span className="bg-red-500/20 text-red-400 px-3 py-1 rounded-full text-sm font-medium">
-                        Bloqueado
+                    {user.approved === true ? (
+                      <span className="bg-green-500/20 text-green-400 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1 w-fit">
+                        <CheckCircle size={16} />
+                        Aprovado
+                      </span>
+                    ) : user.approved === false ? (
+                      <span className="bg-yellow-500/20 text-yellow-400 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1 w-fit">
+                        <XCircle size={16} />
+                        Pendente
                       </span>
                     ) : (
-                      <span className="bg-green-500/20 text-green-400 px-3 py-1 rounded-full text-sm font-medium">
-                        Ativo
+                      <span className="bg-gray-500/20 text-gray-400 px-3 py-1 rounded-full text-sm font-medium w-fit">
+                        Sem status
+                      </span>
+                    )}
+                    {user.blocked && (
+                      <span className="ml-2 bg-red-500/20 text-red-400 px-3 py-1 rounded-full text-sm font-medium">
+                        Bloqueado
                       </span>
                     )}
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex items-center justify-center gap-2">
+                      {/* BOTÃO DE APROVAR/DESAPROVAR */}
+                      <button
+                        onClick={() => handleApproveUser(user.id, user.email, user.approved)}
+                        className={`p-2 rounded-lg transition-colors ${
+                          user.approved
+                            ? 'hover:bg-red-500/20 text-red-400'
+                            : 'hover:bg-green-500/20 text-green-400'
+                        }`}
+                        title={user.approved ? 'Remover aprovação' : 'Aprovar usuário'}
+                      >
+                        {user.approved ? <XCircle size={18} /> : <CheckCircle size={18} />}
+                      </button>
+
                       <button
                         onClick={() => openConfirmDialog(user, 'block')}
                         className={`p-2 rounded-lg transition-colors ${
-                          user.blocked 
-                            ? 'hover:bg-green-500/20 text-green-400' 
+                          user.blocked
+                            ? 'hover:bg-green-500/20 text-green-400'
                             : 'hover:bg-yellow-500/20 text-yellow-400'
                         }`}
                         title={user.blocked ? 'Desbloquear' : 'Bloquear'}
@@ -207,9 +321,11 @@ export default function Users() {
           </table>
         </div>
 
-        {users.length === 0 && (
+        {filteredUsers.length === 0 && (
           <div className="text-center py-12 text-gray-400">
-            Nenhum usuário cadastrado
+            {filter === 'pending' && 'Nenhum usuário pendente'}
+            {filter === 'approved' && 'Nenhum usuário aprovado'}
+            {filter === 'all' && 'Nenhum usuário cadastrado'}
           </div>
         )}
       </div>

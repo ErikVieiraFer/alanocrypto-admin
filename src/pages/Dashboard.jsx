@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
-import { Users, TrendingUp, FileText, Activity } from 'lucide-react';
+import { Users, TrendingUp, FileText, Activity, UserCheck } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import Layout from '../components/Layout';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { getUsersCount } from '../services/userService';
 import { getSignals } from '../services/signalService';
 import { getPosts } from '../services/alanoPostService';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { db } from '../config/firebase';
 
 const Dashboard = () => {
   const [stats, setStats] = useState({
@@ -13,6 +16,7 @@ const Dashboard = () => {
     posts: 0,
     activeSignals: 0,
   });
+  const [pendingUsers, setPendingUsers] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -41,6 +45,14 @@ const Dashboard = () => {
           setLoading(false);
         });
 
+        // Get pending users
+        const unsubscribePending = onSnapshot(
+          query(collection(db, 'users'), where('approved', '==', false)),
+          (snapshot) => {
+            setPendingUsers(snapshot.size);
+          }
+        );
+
         setStats((prev) => ({
           ...prev,
           users: usersCount,
@@ -49,6 +61,7 @@ const Dashboard = () => {
         return () => {
           unsubscribeSignals();
           unsubscribePosts();
+          unsubscribePending();
         };
       } catch (error) {
         console.error('Error fetching dashboard data:', error);
@@ -66,6 +79,14 @@ const Dashboard = () => {
       icon: Users,
       color: 'text-gray-300',
       bgColor: 'bg-gray-500/10',
+    },
+    {
+      title: 'Aguardando Aprovação',
+      value: pendingUsers,
+      icon: UserCheck,
+      color: 'text-yellow-400',
+      bgColor: 'bg-yellow-500/20',
+      showLink: pendingUsers > 0,
     },
     {
       title: 'Sinais Criados',
@@ -106,7 +127,7 @@ const Dashboard = () => {
         <h1 className="text-3xl font-bold text-white mb-8">Dashboard</h1>
 
         {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
           {cards.map((card, index) => {
             const Icon = card.icon;
             return (
@@ -123,6 +144,14 @@ const Dashboard = () => {
                   {card.title}
                 </h3>
                 <p className="text-3xl font-bold text-white">{card.value}</p>
+                {card.showLink && (
+                  <Link
+                    to="/users?filter=pending"
+                    className="text-yellow-400 text-sm hover:underline mt-2 inline-block"
+                  >
+                    Ver pendentes →
+                  </Link>
+                )}
               </div>
             );
           })}

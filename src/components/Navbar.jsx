@@ -1,11 +1,14 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { LayoutDashboard, TrendingUp, FileText, Users, LogOut, Menu, X } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { db } from '../config/firebase';
 
 const Navbar = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   const location = useLocation();
   const { signOut } = useAuth();
 
@@ -15,6 +18,16 @@ const Navbar = () => {
     { name: 'Posts do Alano', path: '/alano-posts', icon: FileText },
     { name: 'Usuários', path: '/users', icon: Users },
   ];
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      query(collection(db, 'users'), where('approved', '==', false)),
+      (snapshot) => {
+        setPendingCount(snapshot.size);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
 
   const handleSignOut = async () => {
     const result = await signOut();
@@ -49,6 +62,7 @@ const Navbar = () => {
           <div className="hidden md:flex items-center space-x-4">
             {navigation.map((item) => {
               const Icon = item.icon;
+              const isUsersPage = item.path === '/users';
               return (
                 <Link
                   key={item.path}
@@ -61,6 +75,11 @@ const Navbar = () => {
                 >
                   <Icon size={20} />
                   <span>{item.name}</span>
+                  {isUsersPage && pendingCount > 0 && (
+                    <span className="ml-auto bg-yellow-500 text-black px-2 py-0.5 rounded-full text-xs font-bold">
+                      {pendingCount}
+                    </span>
+                  )}
                 </Link>
               );
             })}
@@ -91,6 +110,7 @@ const Navbar = () => {
           <div className="px-2 pt-2 pb-3 space-y-1">
             {navigation.map((item) => {
               const Icon = item.icon;
+              const isUsersPage = item.path === '/users';
               return (
                 <Link
                   key={item.path}
@@ -104,6 +124,11 @@ const Navbar = () => {
                 >
                   <Icon size={20} />
                   <span>{item.name}</span>
+                  {isUsersPage && pendingCount > 0 && (
+                    <span className="ml-auto bg-yellow-500 text-black px-2 py-0.5 rounded-full text-xs font-bold">
+                      {pendingCount}
+                    </span>
+                  )}
                 </Link>
               );
             })}
