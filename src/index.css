@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+:root {
+  --color-primary: #000000;
+  --color-card: #033a07;
+  --color-accent: #ffffff;
+  --color-secondary: #94b894;
+}
+
+body {
+  background-color: var(--color-primary);
+  color: white;
+}
+
+.custom-select option {
+  background-color: #333d33;
+  color: white;
+}
