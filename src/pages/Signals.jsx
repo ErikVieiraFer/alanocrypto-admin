@@ -1,10 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useForm } from 'react-hook-form';
-import { Plus, Edit, Trash, CheckCircle, AlertCircle } from 'lucide-react';
+import { Plus, Edit, Trash, CheckCircle, AlertCircle, Search, TrendingUp } from 'lucide-react';
 import Layout from '../components/Layout';
 import Modal from '../components/Modal';
 import ConfirmDialog from '../components/ConfirmDialog';
-import LoadingSpinner from '../components/LoadingSpinner';
+import SkeletonTable from '../components/SkeletonTable';
+import Tooltip from '../components/Tooltip';
+import { useDebounce } from '../hooks/useDebounce';
 import toast from 'react-hot-toast';
 import {
   getSignals,
@@ -22,14 +24,22 @@ const Signals = () => {
   const [editingSignal, setEditingSignal] = useState(null);
   const [closingSignal, setClosingSignal] = useState(null);
   const [deleteDialog, setDeleteDialog] = useState({ isOpen: false, signalId: null });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterType, setFilterType] = useState('all');
+  const [filterStatus, setFilterStatus] = useState('all');
+
+  const debouncedSearch = useDebounce(searchTerm, 300);
 
   const {
     register,
     handleSubmit,
     reset,
     setValue,
+    watch,
     formState: { errors },
   } = useForm();
+
+  const confidenceValue = watch('confidence', 50);
 
   const {
     register: registerClose,
@@ -192,11 +202,21 @@ const Signals = () => {
     }
   };
 
+  const filteredSignals = useMemo(() => {
+    return signals.filter(signal => {
+      const matchesSearch = signal.coin.toLowerCase().includes(debouncedSearch.toLowerCase());
+      const matchesType = filterType === 'all' || signal.type === filterType;
+      const matchesStatus = filterStatus === 'all' || signal.status === filterStatus;
+      return matchesSearch && matchesType && matchesStatus;
+    });
+  }, [signals, debouncedSearch, filterType, filterStatus]);
+
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-[calc(100vh-200px)]">
-          <LoadingSpinner size="lg" />
+        <div>
+          <h1 className="text-3xl font-bold text-white mb-8">Gerenciar Sinais</h1>
+          <SkeletonTable rows={5} columns={8} />
         </div>
       </Layout>
     );
@@ -215,6 +235,51 @@ const Signals = () => {
             <Plus size={20} />
             <span>Criar Sinal</span>
           </button>
+        </div>
+
+        {/* Search and Filters */}
+        <div className="mb-6 space-y-4">
+          {/* Search */}
+          <div className="flex items-center gap-2 bg-card rounded-lg px-4 py-3 border border-gray-700">
+            <Search className="h-5 w-5 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Buscar por moeda..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="flex-1 bg-transparent text-white placeholder-gray-500 outline-none"
+            />
+          </div>
+
+          {/* Filters */}
+          <div className="flex flex-wrap gap-3">
+            {/* Status Filter */}
+            <select
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
+              className="px-4 py-2 bg-card border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
+              <option value="all">Todos Status</option>
+              <option value="active">Ativos</option>
+              <option value="closed">Fechados</option>
+            </select>
+
+            {/* Type Filter */}
+            <select
+              value={filterType}
+              onChange={(e) => setFilterType(e.target.value)}
+              className="px-4 py-2 bg-card border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
+              <option value="all">Todos Tipos</option>
+              <option value="long">LONG</option>
+              <option value="short">SHORT</option>
+            </select>
+
+            {/* Results count */}
+            <div className="flex items-center px-4 py-2 bg-card/50 rounded-lg text-gray-400">
+              {filteredSignals.length} resultado(s)
+            </div>
+          </div>
         </div>
 
         {/* Signals Table */}
@@ -250,14 +315,34 @@ const Signals = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-700">
-                {signals.length === 0 ? (
+                {filteredSignals.length === 0 ? (
                   <tr>
-                    <td colSpan="8" className="px-6 py-8 text-center text-gray-400">
-                      Nenhum sinal encontrado. Crie seu primeiro sinal!
+                    <td colSpan="8" className="px-6 py-16 text-center">
+                      <div className="inline-flex items-center justify-center w-16 h-16 bg-gray-700/20 rounded-full mb-4">
+                        <TrendingUp className="h-8 w-8 text-gray-600" />
+                      </div>
+                      <h3 className="text-lg font-medium text-white mb-2">
+                        {searchTerm || filterType !== 'all' || filterStatus !== 'all'
+                          ? 'Nenhum resultado encontrado'
+                          : 'Nenhum sinal cadastrado'}
+                      </h3>
+                      <p className="text-gray-400 mb-6">
+                        {searchTerm || filterType !== 'all' || filterStatus !== 'all'
+                          ? 'Tente ajustar os filtros de busca'
+                          : 'Crie seu primeiro sinal de trading'}
+                      </p>
+                      {!(searchTerm || filterType !== 'all' || filterStatus !== 'all') && (
+                        <button
+                          onClick={openCreateModal}
+                          className="bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg transition-colors"
+                        >
+                          Criar Primeiro Sinal
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ) : (
-                  signals.map((signal) => (
+                  filteredSignals.map((signal) => (
                     <tr key={signal.id} className="hover:bg-gray-800/50 transition-colors">
                       <td className="px-6 py-4 whitespace-nowrap text-white font-medium">
                         {signal.coin}
@@ -310,31 +395,34 @@ const Signals = () => {
                         <div className="flex items-center space-x-2">
                           {signal.status === 'active' && (
                             <>
-                              <button
-                                onClick={() => openEditModal(signal)}
-                                className="text-gray-400 hover:text-white transition-colors"
-                                title="Editar"
-                              >
-                                <Edit size={18} />
-                              </button>
-                              <button
-                                onClick={() => openCloseModal(signal)}
-                                className="text-green-500 hover:text-green-400 transition-colors"
-                                title="Fechar Sinal"
-                              >
-                                <CheckCircle size={18} />
-                              </button>
+                              <Tooltip text="Editar sinal">
+                                <button
+                                  onClick={() => openEditModal(signal)}
+                                  className="text-gray-400 hover:text-white transition-colors"
+                                >
+                                  <Edit size={18} />
+                                </button>
+                              </Tooltip>
+                              <Tooltip text="Fechar sinal">
+                                <button
+                                  onClick={() => openCloseModal(signal)}
+                                  className="text-green-500 hover:text-green-400 transition-colors"
+                                >
+                                  <CheckCircle size={18} />
+                                </button>
+                              </Tooltip>
                             </>
                           )}
-                          <button
-                            onClick={() =>
-                              setDeleteDialog({ isOpen: true, signalId: signal.id })
-                            }
-                            className="text-red-500 hover:text-red-400 transition-colors"
-                            title="Deletar"
-                          >
-                            <Trash size={18} />
-                          </button>
+                          <Tooltip text="Deletar sinal">
+                            <button
+                              onClick={() =>
+                                setDeleteDialog({ isOpen: true, signalId: signal.id })
+                              }
+                              className="text-red-500 hover:text-red-400 transition-colors"
+                            >
+                              <Trash size={18} />
+                            </button>
+                          </Tooltip>
                         </div>
                       </td>
                     </tr>
@@ -363,42 +451,63 @@ const Signals = () => {
               <select
                 name="coin"
                 {...register('coin', { required: 'Moeda é obrigatória' })}
-                className="w-full bg-primary border border-gray-700 rounded-lg px-4 py-2.5 text-white"
+                className="w-full bg-green-500/50 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-green-500 transition-colors"
                 required
               >
-                <option value="">Selecione a moeda</option>
-                <optgroup label="Principais">
-                  <option value="BTC-USDT">BTC-USDT (Bitcoin)</option>
-                  <option value="ETH-USDT">ETH-USDT (Ethereum)</option>
-                  <option value="BNB-USDT">BNB-USDT (Binance Coin)</option>
-                  <option value="SOL-USDT">SOL-USDT (Solana)</option>
-                  <option value="XRP-USDT">XRP-USDT (Ripple)</option>
+                <option value="" className="bg-[#0f172a] text-gray-400">
+                  Selecione a moeda
+                </option>
+                <optgroup label="Forex - Principais" className="bg-[#0f172a]">
+                  <option value="EURUSD" className="bg-[#0f172a] text-white">EURUSD (Euro / Dólar)</option>
+                  <option value="GBPUSD" className="bg-[#0f172a] text-white">GBPUSD (Libra / Dólar)</option>
+                  <option value="USDJPY" className="bg-[#0f172a] text-white">USDJPY (Dólar / Iene)</option>
+                  <option value="USDCHF" className="bg-[#0f172a] text-white">USDCHF (Dólar / Franco)</option>
+                  <option value="AUDUSD" className="bg-[#0f172a] text-white">AUDUSD (Dólar Australiano / Dólar)</option>
+                  <option value="USDCAD" className="bg-[#0f172a] text-white">USDCAD (Dólar / Dólar Canadense)</option>
+                  <option value="NZDUSD" className="bg-[#0f172a] text-white">NZDUSD (Dólar NZ / Dólar)</option>
                 </optgroup>
-                <optgroup label="Altcoins Populares">
-                  <option value="ADA-USDT">ADA-USDT (Cardano)</option>
-                  <option value="DOGE-USDT">DOGE-USDT (Dogecoin)</option>
-                  <option value="AVAX-USDT">AVAX-USDT (Avalanche)</option>
-                  <option value="DOT-USDT">DOT-USDT (Polkadot)</option>
-                  <option value="MATIC-USDT">MATIC-USDT (Polygon)</option>
-                  <option value="LINK-USDT">LINK-USDT (Chainlink)</option>
-                  <option value="UNI-USDT">UNI-USDT (Uniswap)</option>
-                  <option value="ATOM-USDT">ATOM-USDT (Cosmos)</option>
-                  <option value="LTC-USDT">LTC-USDT (Litecoin)</option>
-                  <option value="BCH-USDT">BCH-USDT (Bitcoin Cash)</option>
+                <optgroup label="Forex - Cruzados" className="bg-[#0f172a]">
+                  <option value="EURJPY" className="bg-[#0f172a] text-white">EURJPY (Euro / Iene)</option>
+                  <option value="GBPJPY" className="bg-[#0f172a] text-white">GBPJPY (Libra / Iene)</option>
+                  <option value="EURGBP" className="bg-[#0f172a] text-white">EURGBP (Euro / Libra)</option>
+                  <option value="EURAUD" className="bg-[#0f172a] text-white">EURAUD (Euro / Dólar Australiano)</option>
+                  <option value="EURCHF" className="bg-[#0f172a] text-white">EURCHF (Euro / Franco)</option>
+                  <option value="AUDJPY" className="bg-[#0f172a] text-white">AUDJPY (Dólar Australiano / Iene)</option>
+                  <option value="CHFJPY" className="bg-[#0f172a] text-white">CHFJPY (Franco / Iene)</option>
+                  <option value="CADJPY" className="bg-[#0f172a] text-white">CADJPY (Dólar Canadense / Iene)</option>
                 </optgroup>
-                <optgroup label="Memecoins">
-                  <option value="SHIB-USDT">SHIB-USDT (Shiba Inu)</option>
-                  <option value="PEPE-USDT">PEPE-USDT (Pepe)</option>
-                  <option value="FLOKI-USDT">FLOKI-USDT (Floki)</option>
+                <optgroup label="Crypto - Principais" className="bg-[#0f172a]">
+                  <option value="BTC-USDT" className="bg-[#0f172a] text-white">BTC-USDT (Bitcoin)</option>
+                  <option value="ETH-USDT" className="bg-[#0f172a] text-white">ETH-USDT (Ethereum)</option>
+                  <option value="BNB-USDT" className="bg-[#0f172a] text-white">BNB-USDT (Binance Coin)</option>
+                  <option value="SOL-USDT" className="bg-[#0f172a] text-white">SOL-USDT (Solana)</option>
+                  <option value="XRP-USDT" className="bg-[#0f172a] text-white">XRP-USDT (Ripple)</option>
                 </optgroup>
-                <optgroup label="DeFi">
-                  <option value="AAVE-USDT">AAVE-USDT</option>
-                  <option value="MKR-USDT">MKR-USDT (Maker)</option>
-                  <option value="CRV-USDT">CRV-USDT (Curve)</option>
+                <optgroup label="Crypto - Altcoins Populares" className="bg-[#0f172a]">
+                  <option value="ADA-USDT" className="bg-[#0f172a] text-white">ADA-USDT (Cardano)</option>
+                  <option value="DOGE-USDT" className="bg-[#0f172a] text-white">DOGE-USDT (Dogecoin)</option>
+                  <option value="AVAX-USDT" className="bg-[#0f172a] text-white">AVAX-USDT (Avalanche)</option>
+                  <option value="DOT-USDT" className="bg-[#0f172a] text-white">DOT-USDT (Polkadot)</option>
+                  <option value="MATIC-USDT" className="bg-[#0f172a] text-white">MATIC-USDT (Polygon)</option>
+                  <option value="LINK-USDT" className="bg-[#0f172a] text-white">LINK-USDT (Chainlink)</option>
+                  <option value="UNI-USDT" className="bg-[#0f172a] text-white">UNI-USDT (Uniswap)</option>
+                  <option value="ATOM-USDT" className="bg-[#0f172a] text-white">ATOM-USDT (Cosmos)</option>
+                  <option value="LTC-USDT" className="bg-[#0f172a] text-white">LTC-USDT (Litecoin)</option>
+                  <option value="BCH-USDT" className="bg-[#0f172a] text-white">BCH-USDT (Bitcoin Cash)</option>
                 </optgroup>
-                <optgroup label="Layer 2">
-                  <option value="ARB-USDT">ARB-USDT (Arbitrum)</option>
-                  <option value="OP-USDT">OP-USDT (Optimism)</option>
+                <optgroup label="Crypto - Memecoins" className="bg-[#0f172a]">
+                  <option value="SHIB-USDT" className="bg-[#0f172a] text-white">SHIB-USDT (Shiba Inu)</option>
+                  <option value="PEPE-USDT" className="bg-[#0f172a] text-white">PEPE-USDT (Pepe)</option>
+                  <option value="FLOKI-USDT" className="bg-[#0f172a] text-white">FLOKI-USDT (Floki)</option>
+                </optgroup>
+                <optgroup label="Crypto - DeFi" className="bg-[#0f172a]">
+                  <option value="AAVE-USDT" className="bg-[#0f172a] text-white">AAVE-USDT</option>
+                  <option value="MKR-USDT" className="bg-[#0f172a] text-white">MKR-USDT (Maker)</option>
+                  <option value="CRV-USDT" className="bg-[#0f172a] text-white">CRV-USDT (Curve)</option>
+                </optgroup>
+                <optgroup label="Crypto - Layer 2" className="bg-[#0f172a]">
+                  <option value="ARB-USDT" className="bg-[#0f172a] text-white">ARB-USDT (Arbitrum)</option>
+                  <option value="OP-USDT" className="bg-[#0f172a] text-white">OP-USDT (Optimism)</option>
                 </optgroup>
               </select>
               {errors.coin && (
@@ -413,11 +522,12 @@ const Signals = () => {
               </label>
               <select
                 {...register('type', { required: 'Tipo é obrigatório' })}
-                className="custom-select w-full bg-primary border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-white"
+                className="w-full bg-green-500/50 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-green-500 transition-colors"
+                required
               >
-                <option value="">Selecione</option>
-                <option value="long">LONG</option>
-                <option value="short">SHORT</option>
+                <option value="" className="bg-[#0f172a] text-gray-400">Selecione o tipo</option>
+                <option value="long" className="bg-[#0f172a] text-white">LONG (Compra)</option>
+                <option value="short" className="bg-[#0f172a] text-white">SHORT (Venda)</option>
               </select>
             </div>
 
@@ -508,17 +618,26 @@ const Signals = () => {
             </div>
 
             {/* Confidence */}
-            <div>
+            <div className="md:col-span-2">
               <label className="block text-sm font-medium text-gray-300 mb-2">
-                Confiança: {register('confidence').value || 50}%
+                Confiança: {confidenceValue}%
               </label>
               <input
                 type="range"
                 min="0"
                 max="100"
+                defaultValue="50"
                 {...register('confidence')}
-                className="w-full"
+                className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-green-500"
+                style={{
+                  background: `linear-gradient(to right, #10b981 0%, #10b981 ${confidenceValue}%, #374151 ${confidenceValue}%, #374151 100%)`
+                }}
               />
+              <div className="flex justify-between text-xs text-gray-400 mt-1">
+                <span>0%</span>
+                <span>50%</span>
+                <span>100%</span>
+              </div>
             </div>
           </div>
 
