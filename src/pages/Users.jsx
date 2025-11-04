@@ -4,6 +4,7 @@ import { collection, query, getDocs, doc, deleteDoc, updateDoc } from 'firebase/
 import { db } from '../config/firebase';
 import toast from 'react-hot-toast';
 import ConfirmDialog from '../components/ConfirmDialog';
+import { logAction, ACTIONS } from '../services/auditService';
 
 const UserAvatar = ({ user }) => {
   const [imgError, setImgError] = useState(false);
@@ -67,7 +68,9 @@ export default function Users() {
     try {
       const userRef = doc(db, 'users', userId);
       await deleteDoc(userRef);
-      
+
+      await logAction(ACTIONS.DELETE_USER, { userId, userEmail });
+
       setUsers(users.filter(u => u.id !== userId));
       toast.success(`Usuário ${userEmail} excluído com sucesso`);
     } catch (error) {
@@ -80,16 +83,18 @@ export default function Users() {
     try {
       const userRef = doc(db, 'users', userId);
       const newStatus = !currentStatus;
-      
+
       await updateDoc(userRef, {
         blocked: newStatus,
         blockedAt: newStatus ? new Date() : null
       });
-      
-      setUsers(users.map(u => 
+
+      await logAction(ACTIONS.BLOCK_USER, { userId, userEmail, blocked: newStatus });
+
+      setUsers(users.map(u =>
         u.id === userId ? { ...u, blocked: newStatus } : u
       ));
-      
+
       toast.success(`Usuário ${newStatus ? 'bloqueado' : 'desbloqueado'} com sucesso`);
     } catch (error) {
       console.error('Erro ao bloquear:', error);

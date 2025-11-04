@@ -10,6 +10,7 @@ import {
   orderBy,
 } from 'firebase/firestore';
 import { db } from '../config/firebase';
+import { logAction, ACTIONS } from './auditService';
 
 const COLLECTION_NAME = 'signals';
 
@@ -21,6 +22,13 @@ export const createSignal = async (data) => {
       createdAt: serverTimestamp(),
       closedAt: null,
     });
+
+    await logAction(ACTIONS.CREATE_SIGNAL, {
+      signalId: docRef.id,
+      coin: data.coin,
+      type: data.type
+    });
+
     return { success: true, id: docRef.id };
   } catch (error) {
     console.error('Error creating signal:', error);
@@ -32,6 +40,9 @@ export const updateSignal = async (id, data) => {
   try {
     const docRef = doc(db, COLLECTION_NAME, id);
     await updateDoc(docRef, data);
+
+    await logAction(ACTIONS.UPDATE_SIGNAL, { signalId: id });
+
     return { success: true };
   } catch (error) {
     console.error('Error updating signal:', error);
@@ -42,6 +53,9 @@ export const updateSignal = async (id, data) => {
 export const deleteSignal = async (id) => {
   try {
     await deleteDoc(doc(db, COLLECTION_NAME, id));
+
+    await logAction(ACTIONS.DELETE_SIGNAL, { signalId: id });
+
     return { success: true };
   } catch (error) {
     console.error('Error deleting signal:', error);
@@ -57,6 +71,9 @@ export const closeSignal = async (id, profit) => {
       profit: profit,
       closedAt: serverTimestamp(),
     });
+
+    await logAction(ACTIONS.CLOSE_SIGNAL, { signalId: id, profit });
+
     return { success: true };
   } catch (error) {
     console.error('Error closing signal:', error);

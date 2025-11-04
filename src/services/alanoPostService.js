@@ -11,6 +11,7 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, storage } from '../config/firebase';
+import { logAction, ACTIONS } from './auditService';
 
 const COLLECTION_NAME = 'alano_posts';
 
@@ -45,6 +46,12 @@ export const createPost = async (data) => {
       views: 0,
       createdAt: serverTimestamp(),
     });
+
+    await logAction(ACTIONS.CREATE_POST, {
+      postId: docRef.id,
+      title: data.title
+    });
+
     return { success: true, id: docRef.id };
   } catch (error) {
     console.error('Error creating post:', error);
@@ -56,6 +63,9 @@ export const updatePost = async (id, data) => {
   try {
     const docRef = doc(db, COLLECTION_NAME, id);
     await updateDoc(docRef, data);
+
+    await logAction(ACTIONS.UPDATE_POST, { postId: id });
+
     return { success: true };
   } catch (error) {
     console.error('Error updating post:', error);
@@ -69,6 +79,9 @@ export const deletePost = async (id) => {
     await deleteImage(id);
     // Delete document
     await deleteDoc(doc(db, COLLECTION_NAME, id));
+
+    await logAction(ACTIONS.DELETE_POST, { postId: id });
+
     return { success: true };
   } catch (error) {
     console.error('Error deleting post:', error);

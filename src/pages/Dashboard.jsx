@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Users, TrendingUp, FileText, Activity } from 'lucide-react';
 import Layout from '../components/Layout';
-import LoadingSpinner from '../components/LoadingSpinner';
+import SkeletonCard from '../components/SkeletonCard';
 import { getUsersCount } from '../services/userService';
 import { getSignals } from '../services/signalService';
 import { getPosts } from '../services/alanoPostService';
@@ -93,8 +93,13 @@ const Dashboard = () => {
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-[calc(100vh-200px)]">
-          <LoadingSpinner size="lg" />
+        <div>
+          <h1 className="text-3xl font-bold text-white mb-8">Dashboard</h1>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {[...Array(4)].map((_, i) => (
+              <SkeletonCard key={i} />
+            ))}
+          </div>
         </div>
       </Layout>
     );
