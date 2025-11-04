@@ -457,14 +457,33 @@ const Signals = () => {
                 <option value="" className="bg-[#0f172a] text-gray-400">
                   Selecione a moeda
                 </option>
-                <optgroup label="Principais" className="bg-[#0f172a]">
+                <optgroup label="Forex - Principais" className="bg-[#0f172a]">
+                  <option value="EURUSD" className="bg-[#0f172a] text-white">EURUSD (Euro / Dólar)</option>
+                  <option value="GBPUSD" className="bg-[#0f172a] text-white">GBPUSD (Libra / Dólar)</option>
+                  <option value="USDJPY" className="bg-[#0f172a] text-white">USDJPY (Dólar / Iene)</option>
+                  <option value="USDCHF" className="bg-[#0f172a] text-white">USDCHF (Dólar / Franco)</option>
+                  <option value="AUDUSD" className="bg-[#0f172a] text-white">AUDUSD (Dólar Australiano / Dólar)</option>
+                  <option value="USDCAD" className="bg-[#0f172a] text-white">USDCAD (Dólar / Dólar Canadense)</option>
+                  <option value="NZDUSD" className="bg-[#0f172a] text-white">NZDUSD (Dólar NZ / Dólar)</option>
+                </optgroup>
+                <optgroup label="Forex - Cruzados" className="bg-[#0f172a]">
+                  <option value="EURJPY" className="bg-[#0f172a] text-white">EURJPY (Euro / Iene)</option>
+                  <option value="GBPJPY" className="bg-[#0f172a] text-white">GBPJPY (Libra / Iene)</option>
+                  <option value="EURGBP" className="bg-[#0f172a] text-white">EURGBP (Euro / Libra)</option>
+                  <option value="EURAUD" className="bg-[#0f172a] text-white">EURAUD (Euro / Dólar Australiano)</option>
+                  <option value="EURCHF" className="bg-[#0f172a] text-white">EURCHF (Euro / Franco)</option>
+                  <option value="AUDJPY" className="bg-[#0f172a] text-white">AUDJPY (Dólar Australiano / Iene)</option>
+                  <option value="CHFJPY" className="bg-[#0f172a] text-white">CHFJPY (Franco / Iene)</option>
+                  <option value="CADJPY" className="bg-[#0f172a] text-white">CADJPY (Dólar Canadense / Iene)</option>
+                </optgroup>
+                <optgroup label="Crypto - Principais" className="bg-[#0f172a]">
                   <option value="BTC-USDT" className="bg-[#0f172a] text-white">BTC-USDT (Bitcoin)</option>
                   <option value="ETH-USDT" className="bg-[#0f172a] text-white">ETH-USDT (Ethereum)</option>
                   <option value="BNB-USDT" className="bg-[#0f172a] text-white">BNB-USDT (Binance Coin)</option>
                   <option value="SOL-USDT" className="bg-[#0f172a] text-white">SOL-USDT (Solana)</option>
                   <option value="XRP-USDT" className="bg-[#0f172a] text-white">XRP-USDT (Ripple)</option>
                 </optgroup>
-                <optgroup label="Altcoins Populares" className="bg-[#0f172a]">
+                <optgroup label="Crypto - Altcoins Populares" className="bg-[#0f172a]">
                   <option value="ADA-USDT" className="bg-[#0f172a] text-white">ADA-USDT (Cardano)</option>
                   <option value="DOGE-USDT" className="bg-[#0f172a] text-white">DOGE-USDT (Dogecoin)</option>
                   <option value="AVAX-USDT" className="bg-[#0f172a] text-white">AVAX-USDT (Avalanche)</option>
@@ -476,17 +495,17 @@ const Signals = () => {
                   <option value="LTC-USDT" className="bg-[#0f172a] text-white">LTC-USDT (Litecoin)</option>
                   <option value="BCH-USDT" className="bg-[#0f172a] text-white">BCH-USDT (Bitcoin Cash)</option>
                 </optgroup>
-                <optgroup label="Memecoins" className="bg-[#0f172a]">
+                <optgroup label="Crypto - Memecoins" className="bg-[#0f172a]">
                   <option value="SHIB-USDT" className="bg-[#0f172a] text-white">SHIB-USDT (Shiba Inu)</option>
                   <option value="PEPE-USDT" className="bg-[#0f172a] text-white">PEPE-USDT (Pepe)</option>
                   <option value="FLOKI-USDT" className="bg-[#0f172a] text-white">FLOKI-USDT (Floki)</option>
                 </optgroup>
-                <optgroup label="DeFi" className="bg-[#0f172a]">
+                <optgroup label="Crypto - DeFi" className="bg-[#0f172a]">
                   <option value="AAVE-USDT" className="bg-[#0f172a] text-white">AAVE-USDT</option>
                   <option value="MKR-USDT" className="bg-[#0f172a] text-white">MKR-USDT (Maker)</option>
                   <option value="CRV-USDT" className="bg-[#0f172a] text-white">CRV-USDT (Curve)</option>
                 </optgroup>
-                <optgroup label="Layer 2" className="bg-[#0f172a]">
+                <optgroup label="Crypto - Layer 2" className="bg-[#0f172a]">
                   <option value="ARB-USDT" className="bg-[#0f172a] text-white">ARB-USDT (Arbitrum)</option>
                   <option value="OP-USDT" className="bg-[#0f172a] text-white">OP-USDT (Optimism)</option>
                 </optgroup>
