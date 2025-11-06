@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Users as UsersIcon, Trash2, Ban, Mail, CheckCircle, XCircle, Calendar, Clock } from 'lucide-react';
-import { collection, query, getDocs, doc, deleteDoc, updateDoc, Timestamp } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, doc, deleteDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import toast from 'react-hot-toast';
 import Layout from '../components/Layout';
@@ -52,44 +52,66 @@ export default function Users() {
   });
 
   useEffect(() => {
+    let unsubscribe = () => {};
+
+    const loadUsers = async () => {
+      try {
+        setLoading(true);
+        const usersRef = collection(db, 'users');
+        const q = query(usersRef, orderBy('createdAt', 'desc'));
+
+        unsubscribe = onSnapshot(
+          q,
+          (snapshot) => {
+            try {
+              const usersData = snapshot.docs.map(doc => {
+                const data = doc.data();
+                return {
+                  id: doc.id,
+                  uid: data.uid || doc.id,
+                  email: data.email || '',
+                  displayName: data.displayName || 'Sem nome',
+                  photoURL: data.photoURL || '',
+                  approved: data.approved === true,  // Forçar boolean
+                  blocked: data.blocked === true,    // Forçar boolean
+                  accessUntil: data.accessUntil || null,
+                  createdAt: data.createdAt || null,
+                  lastLogin: data.lastLogin || null,
+                };
+              });
+              setUsers(usersData);
+              setLoading(false);
+            } catch (parseError) {
+              console.error('Erro ao processar usuários:', parseError);
+              setLoading(false);
+            }
+          },
+          (error) => {
+            console.error('Erro no snapshot:', error);
+            toast.error('Erro ao carregar usuários em tempo real');
+            setLoading(false);
+          }
+        );
+      } catch (error) {
+        console.error('Erro ao configurar listener:', error);
+        toast.error('Erro ao carregar usuários');
+        setLoading(false);
+      }
+    };
+
     loadUsers();
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, []);
 
-  const loadUsers = async () => {
-    try {
-      const usersQuery = query(collection(db, 'users'));
-      const snapshot = await getDocs(usersQuery);
-      const usersData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-
-      // Ordenar: pendentes primeiro, depois aprovados
-      usersData.sort((a, b) => {
-        if (a.approved === false && b.approved === true) return -1;
-        if (a.approved === true && b.approved === false) return 1;
-        return 0;
-      });
-
-      setUsers(usersData);
-
-      // Notificação de pendentes
-      const pendingCount = usersData.filter(u => u.approved === false).length;
-      if (pendingCount > 0) {
-        toast.info(`${pendingCount} usuário(s) aguardando aprovação`, {
-          duration: 5000,
-          icon: '⏳',
-        });
-      }
-    } catch (error) {
-      console.error('Erro ao carregar usuários:', error);
-      toast.error('Erro ao carregar usuários');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleDeleteUser = async (userId, userEmail) => {
+    if (!userId) {
+      toast.error('ID do usuário inválido');
+      return;
+    }
+
     try {
       const userRef = doc(db, 'users', userId);
       await deleteDoc(userRef);
@@ -100,18 +122,23 @@ export default function Users() {
       toast.success(`Usuário ${userEmail} excluído com sucesso`);
     } catch (error) {
       console.error('Erro ao excluir:', error);
-      toast.error('Erro ao excluir usuário');
+      toast.error(`Erro ao excluir: ${error.message}`);
     }
   };
 
   const handleBlockUser = async (userId, userEmail, currentStatus) => {
+    if (!userId) {
+      toast.error('ID do usuário inválido');
+      return;
+    }
+
     try {
       const userRef = doc(db, 'users', userId);
       const newStatus = !currentStatus;
 
       await updateDoc(userRef, {
         blocked: newStatus,
-        blockedAt: newStatus ? new Date() : null
+        blockedAt: newStatus ? Timestamp.now() : null
       });
 
       await logAction(ACTIONS.BLOCK_USER, { userId, userEmail, blocked: newStatus });
@@ -123,18 +150,23 @@ export default function Users() {
       toast.success(`Usuário ${newStatus ? 'bloqueado' : 'desbloqueado'} com sucesso`);
     } catch (error) {
       console.error('Erro ao bloquear:', error);
-      toast.error('Erro ao bloquear usuário');
+      toast.error(`Erro ao bloquear: ${error.message}`);
     }
   };
 
   const handleApproveUser = async (userId, userEmail, currentStatus) => {
+    if (!userId) {
+      toast.error('ID do usuário inválido');
+      return;
+    }
+
     try {
       const userRef = doc(db, 'users', userId);
       const newStatus = !currentStatus;
 
       await updateDoc(userRef, {
         approved: newStatus,
-        approvedAt: newStatus ? new Date() : null,
+        approvedAt: newStatus ? Timestamp.now() : null,
         approvedBy: newStatus ? 'admin' : null
       });
 
@@ -144,12 +176,12 @@ export default function Users() {
 
       toast.success(
         newStatus
-          ? `✅ ${userEmail} aprovado! Usuário pode acessar o app.`
-          : `❌ Aprovação de ${userEmail} removida. Acesso bloqueado.`
+          ? `✅ ${userEmail} aprovado!`
+          : `❌ Aprovação removida de ${userEmail}`
       );
     } catch (error) {
       console.error('Erro ao aprovar:', error);
-      toast.error('Erro ao aprovar usuário: ' + error.message);
+      toast.error(`Erro ao aprovar: ${error.message}`);
     }
   };
 
