@@ -16,15 +16,31 @@ admin.initializeApp();
 
 // Enviar código de verificação de email
 exports.sendEmailVerification = onCall(async (request) => {
+  console.log('🔵 [sendEmailVerification] Iniciando...');
+
   try {
     const { email, displayName } = request.data;
 
+    console.log('📧 Email:', email);
+    console.log('👤 Nome:', displayName);
+
     if (!email) {
+      console.error('❌ Email não fornecido');
       throw new Error('Email é obrigatório');
+    }
+
+    // Verificar se API Key está configurada
+    const apiKey = process.env.RESEND_API_KEY;
+    console.log('🔑 API Key configurada:', apiKey ? `${apiKey.substring(0, 8)}...` : 'NÃO CONFIGURADA');
+
+    if (!apiKey || apiKey === 'USUARIO_VAI_COLAR_AQUI') {
+      console.error('❌ RESEND_API_KEY não configurada!');
+      throw new Error('API Key da Resend não configurada. Configure no arquivo .env');
     }
 
     // Gerar código de 6 dígitos
     const code = Math.floor(100000 + Math.random() * 900000).toString();
+    console.log('🔢 Código gerado:', code);
 
     const now = admin.firestore.Timestamp.now();
     const expiresAt = admin.firestore.Timestamp.fromMillis(
@@ -32,6 +48,7 @@ exports.sendEmailVerification = onCall(async (request) => {
     );
 
     // Salvar no Firestore
+    console.log('💾 Salvando código no Firestore...');
     await admin.firestore().collection('email_verifications').add({
       email,
       code,
@@ -39,6 +56,7 @@ exports.sendEmailVerification = onCall(async (request) => {
       expiresAt,
       verified: false,
     });
+    console.log('✅ Código salvo no Firestore com sucesso');
 
     // Template HTML do email
     const htmlContent = `
@@ -149,18 +167,34 @@ exports.sendEmailVerification = onCall(async (request) => {
     `;
 
     // Enviar email
-    await resend.emails.send({
-      from: EMAIL_FROM,
-      to: email,
-      subject: '🔒 Código de Verificação - AlanoCryptoFX',
-      html: htmlContent,
-    });
+    console.log('📮 Enviando email via Resend...');
+    console.log('📤 De:', EMAIL_FROM);
+    console.log('📥 Para:', email);
 
-    console.log(`✅ Email de verificação enviado para: ${email}`);
+    try {
+      const result = await resend.emails.send({
+        from: EMAIL_FROM,
+        to: email,
+        subject: '🔒 Código de Verificação - AlanoCryptoFX',
+        html: htmlContent,
+      });
 
-    return { success: true };
+      console.log('✅ Email enviado com sucesso!');
+      console.log('📬 Resend response:', JSON.stringify(result, null, 2));
+
+      return { success: true, messageId: result.id };
+    } catch (emailError) {
+      console.error('❌ ERRO ao enviar email via Resend:', emailError);
+      console.error('❌ Tipo de erro:', emailError.constructor.name);
+      console.error('❌ Mensagem:', emailError.message);
+      console.error('❌ Stack:', emailError.stack);
+      throw emailError;
+    }
   } catch (error) {
-    console.error('❌ Erro ao enviar email de verificação:', error);
+    console.error('❌ ERRO GERAL na função sendEmailVerification:', error);
+    console.error('❌ Tipo de erro:', error.constructor.name);
+    console.error('❌ Mensagem:', error.message);
+    console.error('❌ Stack:', error.stack);
     throw new Error('Erro ao enviar email de verificação: ' + error.message);
   }
 });
