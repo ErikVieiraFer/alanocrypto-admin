@@ -23,6 +23,11 @@ const Login = () => {
       if (result.success) {
         toast.success('Login realizado com sucesso!');
         navigate('/');
+      } else if (result.needsVerification) {
+        toast.error('Email não verificado. Redirecionando...');
+        setTimeout(() => {
+          navigate('/verify-email', { state: { email: result.email } });
+        }, 1500);
       } else {
         toast.error(result.error || 'Erro ao fazer login');
       }

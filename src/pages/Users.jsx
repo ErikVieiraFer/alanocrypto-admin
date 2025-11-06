@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Users as UsersIcon, Trash2, Ban, Mail, CheckCircle, XCircle, Calendar, Clock } from 'lucide-react';
 import { collection, query, orderBy, onSnapshot, doc, deleteDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { db } from '../config/firebase';
+import { deleteUser } from '../config/cloudFunctions';
 import toast from 'react-hot-toast';
 import Layout from '../components/Layout';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -66,18 +67,28 @@ export default function Users() {
             try {
               const usersData = snapshot.docs.map(doc => {
                 const data = doc.data();
-                return {
+                const user = {
                   id: doc.id,
                   uid: data.uid || doc.id,
                   email: data.email || '',
                   displayName: data.displayName || 'Sem nome',
                   photoURL: data.photoURL || '',
-                  approved: data.approved === true,  // Forçar boolean
-                  blocked: data.blocked === true,    // Forçar boolean
+                  approved: data.approved === true,  // Forçar boolean - true se explicitamente true
+                  blocked: data.blocked === true,    // Forçar boolean - true se explicitamente true
                   accessUntil: data.accessUntil || null,
                   createdAt: data.createdAt || null,
                   lastLogin: data.lastLogin || null,
                 };
+
+                // Debug: log do status de cada usuário
+                console.log(`[Users] ${user.email}:`, {
+                  approved: user.approved,
+                  blocked: user.blocked,
+                  rawApproved: data.approved,
+                  rawBlocked: data.blocked
+                });
+
+                return user;
               });
               setUsers(usersData);
               setLoading(false);
@@ -113,13 +124,16 @@ export default function Users() {
     }
 
     try {
-      const userRef = doc(db, 'users', userId);
-      await deleteDoc(userRef);
+      // Chamar Cloud Function para deletar do Authentication e Firestore
+      const result = await deleteUser(userId);
 
-      await logAction(ACTIONS.DELETE_USER, { userId, userEmail });
-
-      setUsers(users.filter(u => u.id !== userId));
-      toast.success(`Usuário ${userEmail} excluído com sucesso`);
+      if (result.success) {
+        await logAction(ACTIONS.DELETE_USER, { userId, userEmail });
+        setUsers(users.filter(u => u.id !== userId));
+        toast.success(`Usuário ${userEmail} excluído completamente`);
+      } else {
+        throw new Error(result.error || 'Erro ao excluir usuário');
+      }
     } catch (error) {
       console.error('Erro ao excluir:', error);
       toast.error(`Erro ao excluir: ${error.message}`);
@@ -133,6 +147,8 @@ export default function Users() {
     }
 
     try {
+      console.log(`[Bloquear] Usuário: ${userEmail}, Status atual: ${currentStatus}, Novo status: ${!currentStatus}`);
+
       const userRef = doc(db, 'users', userId);
       const newStatus = !currentStatus;
 
@@ -140,6 +156,8 @@ export default function Users() {
         blocked: newStatus,
         blockedAt: newStatus ? Timestamp.now() : null
       });
+
+      console.log(`[Bloquear] Firestore atualizado com sucesso!`);
 
       await logAction(ACTIONS.BLOCK_USER, { userId, userEmail, blocked: newStatus });
 
@@ -161,6 +179,8 @@ export default function Users() {
     }
 
     try {
+      console.log(`[Aprovar] Usuário: ${userEmail}, Status atual: ${currentStatus}, Novo status: ${!currentStatus}`);
+
       const userRef = doc(db, 'users', userId);
       const newStatus = !currentStatus;
 
@@ -169,6 +189,8 @@ export default function Users() {
         approvedAt: newStatus ? Timestamp.now() : null,
         approvedBy: newStatus ? 'admin' : null
       });
+
+      console.log(`[Aprovar] Firestore atualizado com sucesso!`);
 
       setUsers(users.map(u =>
         u.id === userId ? { ...u, approved: newStatus } : u
@@ -278,9 +300,9 @@ export default function Users() {
 
   // Filtro de usuários
   const filteredUsers = users.filter(user => {
-    if (filter === 'pending') return user.approved === false;
-    if (filter === 'approved') return user.approved === true && !user.blocked;
-    if (filter === 'blocked') return user.blocked === true;
+    if (filter === 'pending') return !user.approved && !user.blocked;
+    if (filter === 'approved') return user.approved && !user.blocked;
+    if (filter === 'blocked') return user.blocked;
     return true; // 'all'
   });
 
@@ -291,9 +313,9 @@ export default function Users() {
           <div className="flex items-center gap-3">
             <UsersIcon size={32} className="text-white" />
             <h1 className="text-2xl font-bold text-white">Gerenciar Usuários</h1>
-            {users.filter(u => u.approved === false).length > 0 && (
+            {users.filter(u => !u.approved && !u.blocked).length > 0 && (
               <span className="bg-yellow-500 text-black px-3 py-1 rounded-full text-sm font-bold">
-                {users.filter(u => u.approved === false).length} pendente(s)
+                {users.filter(u => !u.approved && !u.blocked).length} pendente(s)
               </span>
             )}
           </div>
@@ -323,7 +345,7 @@ export default function Users() {
                 : 'bg-[#1e293b] text-white hover:bg-[#334155]'
             }`}
           >
-            Pendentes ({users.filter(u => u.approved === false).length})
+            Pendentes ({users.filter(u => !u.approved && !u.blocked).length})
           </button>
 
           <button
@@ -334,7 +356,7 @@ export default function Users() {
                 : 'bg-[#1e293b] text-white hover:bg-[#334155]'
             }`}
           >
-            Aprovados ({users.filter(u => u.approved === true).length})
+            Aprovados ({users.filter(u => u.approved && !u.blocked).length})
           </button>
 
           <button
@@ -385,28 +407,21 @@ export default function Users() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-col gap-2">
-                        {/* Status de Aprovação */}
-                        {user.approved === true ? (
-                          <span className="bg-green-500/20 text-green-400 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1 w-fit">
-                            <CheckCircle size={16} />
-                            Aprovado
-                          </span>
-                        ) : user.approved === false ? (
-                          <span className="bg-yellow-500/20 text-yellow-400 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1 w-fit">
-                            <Clock size={16} />
-                            Pendente
-                          </span>
-                        ) : (
-                          <span className="bg-gray-500/20 text-gray-400 px-3 py-1 rounded-full text-sm font-medium w-fit">
-                            Sem status
-                          </span>
-                        )}
-
-                        {/* Status de Bloqueio */}
-                        {user.blocked && (
+                        {/* Status de Bloqueio tem prioridade */}
+                        {user.blocked ? (
                           <span className="bg-red-500/20 text-red-400 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1 w-fit">
                             <Ban size={16} />
                             Bloqueado
+                          </span>
+                        ) : user.approved ? (
+                          <span className="bg-green-500/20 text-green-400 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1 w-fit">
+                            <CheckCircle size={16} />
+                            Ativo
+                          </span>
+                        ) : (
+                          <span className="bg-yellow-500/20 text-yellow-400 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1 w-fit">
+                            <Clock size={16} />
+                            Pendente
                           </span>
                         )}
                       </div>
@@ -435,14 +450,14 @@ export default function Users() {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center justify-center gap-2">
-                        {/* 1. APROVAR/DESAPROVAR (verde/vermelho) */}
+                        {/* 1. APROVAR/DESAPROVAR (verde/vermelho) - botão destacado para pendentes */}
                         <Tooltip text={user.approved ? 'Remover aprovação' : 'Aprovar acesso'}>
                           <button
                             onClick={() => handleApproveUser(user.id, user.email, user.approved)}
-                            className={`p-2 rounded-lg transition-colors ${
+                            className={`p-2 rounded-lg transition-all ${
                               user.approved
                                 ? 'hover:bg-red-500/20 text-red-400'
-                                : 'hover:bg-green-500/20 text-green-400'
+                                : 'bg-green-500/30 hover:bg-green-500/40 text-green-400 ring-2 ring-green-500/50 shadow-lg shadow-green-500/20'
                             }`}
                           >
                             {user.approved ? <XCircle size={18} /> : <CheckCircle size={18} />}

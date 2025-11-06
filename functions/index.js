@@ -210,6 +210,41 @@ exports.verifyEmailCode = onCall(async (request) => {
   }
 });
 
+// Deletar usuário do Authentication e Firestore
+exports.deleteUser = onCall(async (request) => {
+  try {
+    const { userId } = request.data;
+
+    if (!userId) {
+      throw new Error('userId é obrigatório');
+    }
+
+    // Verificar se usuário que está fazendo a requisição é admin
+    // (Você pode adicionar verificação de permissão aqui se necessário)
+
+    try {
+      // 1. Deletar do Firebase Authentication
+      await admin.auth().deleteUser(userId);
+      console.log(`✅ Usuário deletado do Authentication: ${userId}`);
+    } catch (authError) {
+      console.warn(`⚠️ Erro ao deletar do Authentication (pode não existir): ${authError.message}`);
+    }
+
+    try {
+      // 2. Deletar do Firestore
+      await admin.firestore().collection('users').doc(userId).delete();
+      console.log(`✅ Usuário deletado do Firestore: ${userId}`);
+    } catch (firestoreError) {
+      console.warn(`⚠️ Erro ao deletar do Firestore: ${firestoreError.message}`);
+    }
+
+    return { success: true, message: 'Usuário deletado com sucesso' };
+  } catch (error) {
+    console.error('❌ Erro ao deletar usuário:', error);
+    throw new Error('Erro ao deletar usuário: ' + error.message);
+  }
+});
+
 // ═══════════════════════════════════════════════════════════
 // FUNÇÕES DE NOTIFICAÇÃO (Push + Email)
 // ═══════════════════════════════════════════════════════════

@@ -3,6 +3,7 @@ import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import Login from './pages/Login';
+import EmailVerification from './pages/EmailVerification';
 import Dashboard from './pages/Dashboard';
 import Signals from './pages/Signals';
 import AlanoPosts from './pages/AlanoPosts';
@@ -83,6 +84,10 @@ function App() {
                 <Login />
               </PublicRoute>
             }
+          />
+          <Route
+            path="/verify-email"
+            element={<EmailVerification />}
           />
           <Route
             path="/"
