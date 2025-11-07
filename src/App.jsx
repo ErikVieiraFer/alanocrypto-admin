@@ -3,7 +3,7 @@ import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import Login from './pages/Login';
-import EmailVerification from './pages/EmailVerification';
+// import EmailVerification from './pages/EmailVerification'; // DESABILITADO - Login hardcoded
 import Dashboard from './pages/Dashboard';
 import Signals from './pages/Signals';
 import AlanoPosts from './pages/AlanoPosts';
@@ -12,7 +12,7 @@ import LoadingSpinner from './components/LoadingSpinner';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
-  const { user, loading } = useAuth();
+  const { currentUser, loading } = useAuth();
 
   if (loading) {
     return (
@@ -22,7 +22,7 @@ const ProtectedRoute = ({ children }) => {
     );
   }
 
-  if (!user) {
+  if (!currentUser) {
     return <Navigate to="/login" replace />;
   }
 
@@ -31,7 +31,7 @@ const ProtectedRoute = ({ children }) => {
 
 // Public Route Component (redirect if already logged in)
 const PublicRoute = ({ children }) => {
-  const { user, loading } = useAuth();
+  const { currentUser, loading } = useAuth();
 
   if (loading) {
     return (
@@ -41,7 +41,7 @@ const PublicRoute = ({ children }) => {
     );
   }
 
-  if (user) {
+  if (currentUser) {
     return <Navigate to="/" replace />;
   }
 
@@ -85,10 +85,10 @@ function App() {
               </PublicRoute>
             }
           />
-          <Route
+          {/* <Route
             path="/verify-email"
             element={<EmailVerification />}
-          />
+          /> */} {/* DESABILITADO - Login hardcoded */}
           <Route
             path="/"
             element={

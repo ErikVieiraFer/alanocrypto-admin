@@ -1,41 +1,41 @@
-import { createContext, useContext, useState, useEffect } from 'react';
-import {
-  signInWithEmailAndPassword,
-  signOut as firebaseSignOut,
-  onAuthStateChanged
-} from 'firebase/auth';
+import { createContext, useContext, useEffect, useState } from 'react';
+import { signInWithEmailAndPassword, signOut as firebaseSignOut, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../config/firebase';
 
-const AuthContext = createContext({});
+const AuthContext = createContext();
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
+    throw new Error('useAuth must be used within AuthProvider');
   }
   return context;
 };
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [userData, setUserData] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Monitorar estado de autenticação do Firebase
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setUser(user);
-
       if (user) {
-        // Get user data from Firestore
+        // Verificar se é admin
         const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (userDoc.exists()) {
-          setUserData(userDoc.data());
+        const userData = userDoc.data();
+
+        if (userData?.isAdmin === true) {
+          setCurrentUser(user);
+        } else {
+          // Se não for admin, fazer logout automático
+          console.warn('Usuário sem permissão de administrador');
+          await firebaseSignOut(auth);
+          setCurrentUser(null);
         }
       } else {
-        setUserData(null);
+        setCurrentUser(null);
       }
-
       setLoading(false);
     });
 
@@ -44,22 +44,30 @@ export const AuthProvider = ({ children }) => {
 
   const signIn = async (email, password) => {
     try {
+      // Login REAL com Firebase Authentication
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
 
-      // Check if email is verified
+      // Verificar se o usuário é admin no Firestore
       const userDoc = await getDoc(doc(db, 'users', userCredential.user.uid));
-      const userData = userDoc.exists() ? userDoc.data() : null;
+      const userData = userDoc.data();
 
-      if (!userData?.emailVerified) {
+      if (userData?.isAdmin !== true) {
+        // Se não for admin, fazer logout e retornar erro
+        await firebaseSignOut(auth);
         return {
           success: false,
-          needsVerification: true,
-          email: userCredential.user.email
+          error: 'Acesso negado. Apenas administradores podem acessar este painel.'
         };
       }
 
       return { success: true, user: userCredential.user };
     } catch (error) {
+      console.error('Erro no login:', error);
+
+      if (error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found') {
+        return { success: false, error: 'Email ou senha incorretos' };
+      }
+
       return { success: false, error: error.message };
     }
   };
@@ -74,11 +82,10 @@ export const AuthProvider = ({ children }) => {
   };
 
   const value = {
-    user,
-    userData,
+    currentUser,
     loading,
     signIn,
-    signOut
+    signOut,
   };
 
   return (

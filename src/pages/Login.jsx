@@ -18,20 +18,18 @@ const Login = () => {
 
   const onSubmit = async (data) => {
     setIsLoading(true);
+
     try {
       const result = await signIn(data.email, data.password);
+
       if (result.success) {
         toast.success('Login realizado com sucesso!');
         navigate('/');
-      } else if (result.needsVerification) {
-        toast.error('Email não verificado. Redirecionando...');
-        setTimeout(() => {
-          navigate('/verify-email', { state: { email: result.email } });
-        }, 1500);
       } else {
-        toast.error(result.error || 'Erro ao fazer login');
+        toast.error(result.error || 'Email ou senha incorretos');
       }
     } catch (error) {
+      console.error('Erro no login:', error);
       toast.error('Erro ao fazer login');
     } finally {
       setIsLoading(false);
