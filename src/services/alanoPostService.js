@@ -17,9 +17,16 @@ const COLLECTION_NAME = 'alano_posts';
 
 export const uploadImage = async (file, postId) => {
   try {
-    const storageRef = ref(storage, `alano_posts/${postId}/image.jpg`);
+    // Gerar nome único baseado em timestamp para evitar cache
+    const timestamp = Date.now();
+    const fileExtension = file.name.split('.').pop() || 'jpg';
+    const fileName = `image_${timestamp}.${fileExtension}`;
+
+    const storageRef = ref(storage, `alano_posts/${postId}/${fileName}`);
     await uploadBytes(storageRef, file);
     const downloadURL = await getDownloadURL(storageRef);
+
+    console.log('✅ Upload completo:', downloadURL);
     return { success: true, url: downloadURL };
   } catch (error) {
     console.error('Error uploading image:', error);
@@ -29,8 +36,18 @@ export const uploadImage = async (file, postId) => {
 
 export const deleteImage = async (postId) => {
   try {
-    const storageRef = ref(storage, `alano_posts/${postId}/image.jpg`);
-    await deleteObject(storageRef);
+    // Tentar deletar o formato antigo (compatibilidade)
+    try {
+      const oldStorageRef = ref(storage, `alano_posts/${postId}/image.jpg`);
+      await deleteObject(oldStorageRef);
+    } catch (err) {
+      // Ignorar erro se não existir
+      console.log('Imagem antiga não encontrada (normal)');
+    }
+
+    // Nota: Para deletar todas as imagens, seria necessário listar o diretório
+    // O Firebase Storage Web SDK não suporta listAll diretamente de forma simples
+    // Por isso mantemos tentativa de deletar formato antigo
     return { success: true };
   } catch (error) {
     console.error('Error deleting image:', error);

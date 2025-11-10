@@ -100,48 +100,74 @@ const AlanoPosts = () => {
         return;
       }
 
-      const postData = {
-        title: data.title,
-        content: data.content,
-        videoUrl: data.videoUrl || '',
-        imageUrl: editingPost?.imageUrl || '',
-      };
+      let imageUrl = editingPost?.imageUrl;
 
-      let result;
-      let postId;
-
+      // EDITAR post existente
       if (editingPost) {
-        // Update existing post
-        result = await updatePost(editingPost.id, postData);
-        postId = editingPost.id;
+        // Se tiver nova imagem, fazer upload primeiro
+        if (imageFile) {
+          const uploadResult = await uploadImage(imageFile, editingPost.id);
+          if (!uploadResult.success) {
+            toast.error('Erro ao fazer upload da imagem');
+            setUploadingImage(false);
+            return;
+          }
+          imageUrl = uploadResult.url;
+        }
+
+        const postData = {
+          title: data.title,
+          content: data.content,
+          videoUrl: data.videoUrl || '',
+          ...(imageUrl && { imageUrl }),
+        };
+
+        const result = await updatePost(editingPost.id, postData);
         if (result.success) {
           toast.success('Post atualizado com sucesso!');
+          setIsModalOpen(false);
+          setImageFile(null);
+          setImagePreview(null);
+        } else {
+          toast.error(result.error || 'Erro ao atualizar post');
         }
-      } else {
-        // Create new post
-        result = await createPost(postData);
-        postId = result.id;
-        if (result.success) {
+      }
+      // CRIAR novo post
+      else {
+        // Preparar dados do post (sem imagem por enquanto)
+        const postData = {
+          title: data.title,
+          content: data.content,
+          videoUrl: data.videoUrl || '',
+        };
+
+        // Criar o post primeiro para obter o ID
+        const result = await createPost(postData);
+        if (!result.success) {
+          toast.error(result.error || 'Erro ao criar post');
+          setUploadingImage(false);
+          return;
+        }
+
+        const postId = result.id;
+
+        // Se tiver imagem, fazer upload e atualizar
+        if (imageFile) {
+          const uploadResult = await uploadImage(imageFile, postId);
+          if (uploadResult.success) {
+            // Atualizar post com URL da imagem
+            await updatePost(postId, { imageUrl: uploadResult.url });
+            toast.success('Post criado com sucesso!');
+          } else {
+            toast.error('Post criado, mas houve erro no upload da imagem');
+          }
+        } else {
           toast.success('Post criado com sucesso!');
         }
-      }
 
-      // Upload image if provided
-      if (result.success && imageFile) {
-        const uploadResult = await uploadImage(imageFile, postId);
-        if (uploadResult.success) {
-          await updatePost(postId, { imageUrl: uploadResult.url });
-        } else {
-          toast.error('Erro ao fazer upload da imagem');
-        }
-      }
-
-      if (result.success) {
         setIsModalOpen(false);
         setImageFile(null);
         setImagePreview(null);
-      } else {
-        toast.error(result.error || 'Erro ao salvar post');
       }
     } catch (error) {
       console.error('Error saving post:', error);
