@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users as UsersIcon, Trash2, Ban, Mail, CheckCircle, XCircle, Calendar, Clock } from 'lucide-react';
+import { Users as UsersIcon, Trash2, Ban, Mail, CheckCircle, XCircle, Calendar, Clock, Phone, Search } from 'lucide-react';
 import { collection, query, orderBy, onSnapshot, doc, deleteDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import { deleteUser } from '../config/cloudFunctions';
@@ -8,6 +8,7 @@ import Layout from '../components/Layout';
 import ConfirmDialog from '../components/ConfirmDialog';
 import Tooltip from '../components/Tooltip';
 import { logAction, ACTIONS } from '../services/auditService';
+import { formatPhoneNumber } from '../utils/formatters';
 
 const UserAvatar = ({ user }) => {
   const [imgError, setImgError] = useState(false);
@@ -46,6 +47,7 @@ export default function Users() {
   const [loading, setLoading] = useState(true);
   const [confirmDialog, setConfirmDialog] = useState({ open: false, user: null, action: null });
   const [filter, setFilter] = useState('all'); // 'all', 'pending', 'approved', 'blocked'
+  const [searchTerm, setSearchTerm] = useState('');
   const [accessDialog, setAccessDialog] = useState({
     isOpen: false,
     user: null,
@@ -73,6 +75,7 @@ export default function Users() {
                   email: data.email || '',
                   displayName: data.displayName || 'Sem nome',
                   photoURL: data.photoURL || '',
+                  phone: data.phone || null,
                   approved: data.approved === true,  // Forçar boolean - true se explicitamente true
                   blocked: data.blocked === true,    // Forçar boolean - true se explicitamente true
                   accessUntil: data.accessUntil || null,
@@ -300,6 +303,14 @@ export default function Users() {
 
   // Filtro de usuários
   const filteredUsers = users.filter(user => {
+    const term = searchTerm.toLowerCase();
+    const matchesSearch =
+      user.displayName.toLowerCase().includes(term) ||
+      user.email.toLowerCase().includes(term) ||
+      (user.phone && user.phone.includes(term));
+
+    if (!matchesSearch) return false;
+
     if (filter === 'pending') return !user.approved && !user.blocked;
     if (filter === 'approved') return user.approved && !user.blocked;
     if (filter === 'blocked') return user.blocked;
@@ -324,52 +335,71 @@ export default function Users() {
           </div>
         </div>
 
-        {/* Botões de filtro */}
-        <div className="flex gap-2 mb-6 flex-wrap">
-          <button
-            onClick={() => setFilter('all')}
-            className={`px-4 py-2 rounded-lg transition-colors ${
-              filter === 'all'
-                ? 'bg-white text-black font-semibold'
-                : 'bg-[#1e293b] text-white hover:bg-[#334155]'
-            }`}
-          >
-            Todos ({users.length})
-          </button>
+        {/* Filtros e Busca */}
+        <div className="flex flex-col md:flex-row gap-4 mb-6">
+          {/* Botões de filtro */}
+          <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={() => setFilter('all')}
+              className={`px-4 py-2 rounded-lg transition-colors ${
+                filter === 'all'
+                  ? 'bg-white text-black font-semibold'
+                  : 'bg-[#1e293b] text-white hover:bg-[#334155]'
+              }`}
+            >
+              Todos ({users.length})
+            </button>
 
-          <button
-            onClick={() => setFilter('pending')}
-            className={`px-4 py-2 rounded-lg transition-colors ${
-              filter === 'pending'
-                ? 'bg-yellow-500 text-black font-semibold'
-                : 'bg-[#1e293b] text-white hover:bg-[#334155]'
-            }`}
-          >
-            Pendentes ({users.filter(u => !u.approved && !u.blocked).length})
-          </button>
+            <button
+              onClick={() => setFilter('pending')}
+              className={`px-4 py-2 rounded-lg transition-colors ${
+                filter === 'pending'
+                  ? 'bg-yellow-500 text-black font-semibold'
+                  : 'bg-[#1e293b] text-white hover:bg-[#334155]'
+              }`}
+            >
+              Pendentes ({users.filter(u => !u.approved && !u.blocked).length})
+            </button>
 
-          <button
-            onClick={() => setFilter('approved')}
-            className={`px-4 py-2 rounded-lg transition-colors ${
-              filter === 'approved'
-                ? 'bg-green-500 text-black font-semibold'
-                : 'bg-[#1e293b] text-white hover:bg-[#334155]'
-            }`}
-          >
-            Aprovados ({users.filter(u => u.approved && !u.blocked).length})
-          </button>
+            <button
+              onClick={() => setFilter('approved')}
+              className={`px-4 py-2 rounded-lg transition-colors ${
+                filter === 'approved'
+                  ? 'bg-green-500 text-black font-semibold'
+                  : 'bg-[#1e293b] text-white hover:bg-[#334155]'
+              }`}
+            >
+              Aprovados ({users.filter(u => u.approved && !u.blocked).length})
+            </button>
 
-          <button
-            onClick={() => setFilter('blocked')}
-            className={`px-4 py-2 rounded-lg transition-colors ${
-              filter === 'blocked'
-                ? 'bg-red-500 text-black font-semibold'
-                : 'bg-[#1e293b] text-white hover:bg-[#334155]'
-            }`}
-          >
-            Bloqueados ({users.filter(u => u.blocked).length})
-          </button>
+            <button
+              onClick={() => setFilter('blocked')}
+              className={`px-4 py-2 rounded-lg transition-colors ${
+                filter === 'blocked'
+                  ? 'bg-red-500 text-black font-semibold'
+                  : 'bg-[#1e293b] text-white hover:bg-[#334155]'
+              }`}
+            >
+              Bloqueados ({users.filter(u => u.blocked).length})
+            </button>
+          </div>
+
+          {/* Campo de busca */}
+          <div className="relative flex-grow">
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+              size={20}
+            />
+            <input
+              type="text"
+              placeholder="Buscar por nome, email ou telefone..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-[#1e293b] border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-green-500"
+            />
+          </div>
         </div>
+
 
         <div className="bg-card rounded-lg overflow-hidden border border-gray-700">
           <div className="overflow-x-auto">
@@ -377,7 +407,7 @@ export default function Users() {
               <thead>
                 <tr className="bg-gray-800 text-gray-400 text-sm">
                   <th className="px-6 py-3 text-left">Usuário</th>
-                  <th className="px-6 py-3 text-left">Email</th>
+                  <th className="px-6 py-3 text-left">Email / Telefone</th>
                   <th className="px-6 py-3 text-left">Cadastro</th>
                   <th className="px-6 py-3 text-left">Status</th>
                   <th className="px-6 py-3 text-left">Acesso Até</th>
@@ -397,9 +427,13 @@ export default function Users() {
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2 text-gray-300">
+                      <div className="flex items-center gap-2 text-gray-300 mb-1">
                         <Mail size={16} />
                         {user.email}
+                      </div>
+                      <div className="flex items-center gap-2 text-gray-400 text-sm">
+                        <Phone size={16} />
+                        {formatPhoneNumber(user.phone)}
                       </div>
                     </td>
                     <td className="px-6 py-4 text-gray-300">
@@ -507,10 +541,11 @@ export default function Users() {
 
           {filteredUsers.length === 0 && (
             <div className="text-center py-12 text-gray-400">
-              {filter === 'pending' && 'Nenhum usuário pendente'}
-              {filter === 'approved' && 'Nenhum usuário aprovado'}
-              {filter === 'blocked' && 'Nenhum usuário bloqueado'}
-              {filter === 'all' && 'Nenhum usuário cadastrado'}
+              {searchTerm && `Nenhum usuário encontrado para "${searchTerm}"`}
+              {!searchTerm && filter === 'pending' && 'Nenhum usuário pendente'}
+              {!searchTerm && filter === 'approved' && 'Nenhum usuário aprovado'}
+              {!searchTerm && filter === 'blocked' && 'Nenhum usuário bloqueado'}
+              {!searchTerm && filter === 'all' && 'Nenhum usuário cadastrado'}
             </div>
           )}
         </div>
