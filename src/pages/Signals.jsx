@@ -96,37 +96,14 @@ const Signals = () => {
   };
 
   const validateSignal = (formData) => {
-    const { coin, type, entry, target1, stopLoss } = formData;
-    
-    if (!coin || !type || !entry || !target1 || !stopLoss) {
-      toast.error('Preencha todos os campos obrigatórios');
+    const { coin, type, entry } = formData;
+
+    // Apenas validar campos obrigatórios
+    if (!coin || !type || !entry) {
+      toast.error('Preencha todos os campos obrigatórios (Par, Tipo e Entry)');
       return false;
     }
-  
-    const entryNum = parseFloat(entry);
-    const sl = parseFloat(stopLoss);
-    const t1 = parseFloat(target1);
-    
-    if (type === 'long') {
-      if (t1 <= entryNum) {
-        toast.error('LONG: Targets devem ser maiores que Entry');
-        return false;
-      }
-      if (sl >= entryNum) {
-        toast.error('LONG: Stop Loss deve ser menor que Entry');
-        return false;
-      }
-    } else if (type === 'short') {
-      if (t1 >= entryNum) {
-        toast.error('SHORT: Targets devem ser menores que Entry');
-        return false;
-      }
-      if (sl <= entryNum) {
-        toast.error('SHORT: Stop Loss deve ser maior que Entry');
-        return false;
-      }
-    }
-    
+
     return true;
   };
 
@@ -136,17 +113,17 @@ const Signals = () => {
     }
     try {
       const signalData = {
-        coin: data.coin,
+        coin: data.coin.trim(),
         type: data.type.toLowerCase(),
         entry: parseFloat(data.entry),
         targets: [
-          parseFloat(data.target1),
-          parseFloat(data.target2),
-          parseFloat(data.target3),
-        ].filter((t) => !isNaN(t)),
-        stopLoss: parseFloat(data.stopLoss),
+          data.target1 ? parseFloat(data.target1) : null,
+          data.target2 ? parseFloat(data.target2) : null,
+          data.target3 ? parseFloat(data.target3) : null,
+        ].filter((t) => t !== null && !isNaN(t)),
+        stopLoss: data.stopLoss ? parseFloat(data.stopLoss) : null,
         confidence: parseInt(data.confidence),
-        notes: data.notes,
+        notes: data.notes || '',
       };
 
       let result;
@@ -244,7 +221,7 @@ const Signals = () => {
             <Search className="h-5 w-5 text-gray-400" />
             <input
               type="text"
-              placeholder="Buscar por moeda..."
+              placeholder="Buscar por par/moeda..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="flex-1 bg-transparent text-white placeholder-gray-500 outline-none"
@@ -289,7 +266,7 @@ const Signals = () => {
               <thead className="bg-gray-800">
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">
-                    Moeda
+                    Par / Moeda
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-300 uppercase tracking-wider">
                     Tipo
@@ -362,10 +339,10 @@ const Signals = () => {
                         ${signal.entry}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-gray-300 text-sm">
-                        {signal.targets.join(', ')}
+                        {signal.targets && signal.targets.length > 0 ? signal.targets.join(', ') : '-'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-gray-300">
-                        ${signal.stopLoss}
+                        {signal.stopLoss ? `$${signal.stopLoss}` : '-'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         {signal.status === 'active' && (
@@ -446,73 +423,21 @@ const Signals = () => {
             {/* Coin */}
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">
-                Moeda *
+                Par Forex / Moeda *
               </label>
-              <select
-                name="coin"
-                {...register('coin', { required: 'Moeda é obrigatória' })}
+              <input
+                type="text"
+                {...register('coin', { required: 'Par/Moeda é obrigatório' })}
                 className="w-full bg-green-500/50 border border-gray-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-green-500 transition-colors"
+                placeholder="Ex: EUR/USD, BTC/USDT, GOLD/USD"
                 required
-              >
-                <option value="" className="bg-[#0f172a] text-gray-400">
-                  Selecione a moeda
-                </option>
-                <optgroup label="Forex - Principais" className="bg-[#0f172a]">
-                  <option value="EURUSD" className="bg-[#0f172a] text-white">EURUSD (Euro / Dólar)</option>
-                  <option value="GBPUSD" className="bg-[#0f172a] text-white">GBPUSD (Libra / Dólar)</option>
-                  <option value="USDJPY" className="bg-[#0f172a] text-white">USDJPY (Dólar / Iene)</option>
-                  <option value="USDCHF" className="bg-[#0f172a] text-white">USDCHF (Dólar / Franco)</option>
-                  <option value="AUDUSD" className="bg-[#0f172a] text-white">AUDUSD (Dólar Australiano / Dólar)</option>
-                  <option value="USDCAD" className="bg-[#0f172a] text-white">USDCAD (Dólar / Dólar Canadense)</option>
-                  <option value="NZDUSD" className="bg-[#0f172a] text-white">NZDUSD (Dólar NZ / Dólar)</option>
-                </optgroup>
-                <optgroup label="Forex - Cruzados" className="bg-[#0f172a]">
-                  <option value="EURJPY" className="bg-[#0f172a] text-white">EURJPY (Euro / Iene)</option>
-                  <option value="GBPJPY" className="bg-[#0f172a] text-white">GBPJPY (Libra / Iene)</option>
-                  <option value="EURGBP" className="bg-[#0f172a] text-white">EURGBP (Euro / Libra)</option>
-                  <option value="EURAUD" className="bg-[#0f172a] text-white">EURAUD (Euro / Dólar Australiano)</option>
-                  <option value="EURCHF" className="bg-[#0f172a] text-white">EURCHF (Euro / Franco)</option>
-                  <option value="AUDJPY" className="bg-[#0f172a] text-white">AUDJPY (Dólar Australiano / Iene)</option>
-                  <option value="CHFJPY" className="bg-[#0f172a] text-white">CHFJPY (Franco / Iene)</option>
-                  <option value="CADJPY" className="bg-[#0f172a] text-white">CADJPY (Dólar Canadense / Iene)</option>
-                </optgroup>
-                <optgroup label="Crypto - Principais" className="bg-[#0f172a]">
-                  <option value="BTC-USDT" className="bg-[#0f172a] text-white">BTC-USDT (Bitcoin)</option>
-                  <option value="ETH-USDT" className="bg-[#0f172a] text-white">ETH-USDT (Ethereum)</option>
-                  <option value="BNB-USDT" className="bg-[#0f172a] text-white">BNB-USDT (Binance Coin)</option>
-                  <option value="SOL-USDT" className="bg-[#0f172a] text-white">SOL-USDT (Solana)</option>
-                  <option value="XRP-USDT" className="bg-[#0f172a] text-white">XRP-USDT (Ripple)</option>
-                </optgroup>
-                <optgroup label="Crypto - Altcoins Populares" className="bg-[#0f172a]">
-                  <option value="ADA-USDT" className="bg-[#0f172a] text-white">ADA-USDT (Cardano)</option>
-                  <option value="DOGE-USDT" className="bg-[#0f172a] text-white">DOGE-USDT (Dogecoin)</option>
-                  <option value="AVAX-USDT" className="bg-[#0f172a] text-white">AVAX-USDT (Avalanche)</option>
-                  <option value="DOT-USDT" className="bg-[#0f172a] text-white">DOT-USDT (Polkadot)</option>
-                  <option value="MATIC-USDT" className="bg-[#0f172a] text-white">MATIC-USDT (Polygon)</option>
-                  <option value="LINK-USDT" className="bg-[#0f172a] text-white">LINK-USDT (Chainlink)</option>
-                  <option value="UNI-USDT" className="bg-[#0f172a] text-white">UNI-USDT (Uniswap)</option>
-                  <option value="ATOM-USDT" className="bg-[#0f172a] text-white">ATOM-USDT (Cosmos)</option>
-                  <option value="LTC-USDT" className="bg-[#0f172a] text-white">LTC-USDT (Litecoin)</option>
-                  <option value="BCH-USDT" className="bg-[#0f172a] text-white">BCH-USDT (Bitcoin Cash)</option>
-                </optgroup>
-                <optgroup label="Crypto - Memecoins" className="bg-[#0f172a]">
-                  <option value="SHIB-USDT" className="bg-[#0f172a] text-white">SHIB-USDT (Shiba Inu)</option>
-                  <option value="PEPE-USDT" className="bg-[#0f172a] text-white">PEPE-USDT (Pepe)</option>
-                  <option value="FLOKI-USDT" className="bg-[#0f172a] text-white">FLOKI-USDT (Floki)</option>
-                </optgroup>
-                <optgroup label="Crypto - DeFi" className="bg-[#0f172a]">
-                  <option value="AAVE-USDT" className="bg-[#0f172a] text-white">AAVE-USDT</option>
-                  <option value="MKR-USDT" className="bg-[#0f172a] text-white">MKR-USDT (Maker)</option>
-                  <option value="CRV-USDT" className="bg-[#0f172a] text-white">CRV-USDT (Curve)</option>
-                </optgroup>
-                <optgroup label="Crypto - Layer 2" className="bg-[#0f172a]">
-                  <option value="ARB-USDT" className="bg-[#0f172a] text-white">ARB-USDT (Arbitrum)</option>
-                  <option value="OP-USDT" className="bg-[#0f172a] text-white">OP-USDT (Optimism)</option>
-                </optgroup>
-              </select>
+              />
               {errors.coin && (
                 <p className="mt-1 text-sm text-red-500">{errors.coin.message}</p>
               )}
+              <small className="text-gray-400 text-xs mt-1 block">
+                Digite qualquer par forex, cripto ou ativo
+              </small>
             </div>
 
             {/* Type */}
@@ -549,46 +474,43 @@ const Signals = () => {
               {errors.entry && (
                 <p className="mt-1 text-sm text-red-500">{errors.entry.message}</p>
               )}
+              <small className="text-gray-400 text-xs mt-1 block">
+                Preço de entrada sugerido para a operação
+              </small>
             </div>
 
             {/* Stop Loss */}
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">
-                Stop Loss *
+                Stop Loss
               </label>
               <input
                 type="number"
                 step="any"
-                {...register('stopLoss', {
-                  required: 'Stop Loss é obrigatório',
-                  min: { value: 0, message: 'Stop Loss deve ser maior que 0' },
-                })}
+                {...register('stopLoss')}
                 className="w-full px-4 py-2 bg-primary border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-white"
-                placeholder="0.00"
+                placeholder="0.00 (opcional)"
               />
-              {errors.stopLoss && (
-                <p className="mt-1 text-sm text-red-500">{errors.stopLoss.message}</p>
-              )}
+              <small className="text-gray-400 text-xs mt-1 block">
+                Deixe em branco se não houver stop loss específico
+              </small>
             </div>
 
             {/* Targets */}
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-2">
-                Target 1 *
+                Target 1
               </label>
               <input
                 type="number"
                 step="any"
-                {...register('target1', {
-                  required: 'Target 1 é obrigatório',
-                  min: { value: 0, message: 'Target deve ser maior que 0' },
-                })}
+                {...register('target1')}
                 className="w-full px-4 py-2 bg-primary border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-white"
-                placeholder="0.00"
+                placeholder="0.00 (opcional)"
               />
-              {errors.target1 && (
-                <p className="mt-1 text-sm text-red-500">{errors.target1.message}</p>
-              )}
+              <small className="text-gray-400 text-xs mt-1 block">
+                Deixe em branco se não houver target específico
+              </small>
             </div>
 
             <div>
@@ -600,8 +522,11 @@ const Signals = () => {
                 step="any"
                 {...register('target2')}
                 className="w-full px-4 py-2 bg-primary border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-white"
-                placeholder="0.00"
+                placeholder="0.00 (opcional)"
               />
+              <small className="text-gray-400 text-xs mt-1 block">
+                Deixe em branco se não houver target específico
+              </small>
             </div>
 
             <div>
@@ -613,8 +538,11 @@ const Signals = () => {
                 step="any"
                 {...register('target3')}
                 className="w-full px-4 py-2 bg-primary border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-white"
-                placeholder="0.00"
+                placeholder="0.00 (opcional)"
               />
+              <small className="text-gray-400 text-xs mt-1 block">
+                Deixe em branco se não houver target específico
+              </small>
             </div>
 
             {/* Confidence */}
