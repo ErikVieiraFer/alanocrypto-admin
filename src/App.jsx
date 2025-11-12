@@ -7,6 +7,9 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Signals from './pages/Signals';
 import AlanoPosts from './pages/AlanoPosts';
+import News from './pages/News';
+import NewsForm from './pages/NewsForm';
+import IntroVideo from './pages/IntroVideo';
 import Users from './pages/Users';
 import LoadingSpinner from './components/LoadingSpinner';
 
@@ -110,6 +113,38 @@ function App() {
             element={
               <ProtectedRoute>
                 <AlanoPosts />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/news"
+            element={
+              <ProtectedRoute>
+                <News />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/news/new"
+            element={
+              <ProtectedRoute>
+                <NewsForm />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/news/edit/:id"
+            element={
+              <ProtectedRoute>
+                <NewsForm />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/intro-video"
+            element={
+              <ProtectedRoute>
+                <IntroVideo />
               </ProtectedRoute>
             }
           />
