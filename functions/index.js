@@ -1,7 +1,9 @@
 const {onDocumentCreated} = require('firebase-functions/v2/firestore');
-const {onCall} = require('firebase-functions/v2/https');
+const {onCall, onRequest} = require('firebase-functions/v2/https');
 const admin = require('firebase-admin');
 const { Resend } = require('resend');
+const axios = require('axios');
+const cors = require('cors')({origin: true});
 
 // Configurar Resend
 // IMPORTANTE: Cole sua API Key da Resend aqui ou no arquivo .env
@@ -834,3 +836,367 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       return null;
     }
   });
+
+// ═══════════════════════════════════════════════════════════
+// FUNÇÕES DE PROXY PARA APIs EXTERNAS
+// ═══════════════════════════════════════════════════════════
+
+// CLOUD FUNCTION 1: NOTÍCIAS (Alpha Vantage)
+exports.getNews = onRequest({cors: true}, async (req, res) => {
+  try {
+    console.log('📰 [getNews] Requisição recebida');
+
+    const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
+
+    if (!apiKey) {
+      throw new Error('Alpha Vantage API key não configurada');
+    }
+
+    console.log('🔑 [getNews] API Key disponível');
+
+    const url = `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=COIN,CRYPTO:BTC,FOREX:USD&apikey=${apiKey}&limit=10`;
+
+    console.log('🌐 [getNews] Fazendo requisição para Alpha Vantage...');
+
+    const response = await axios.get(url, {
+      timeout: 10000,
+    });
+
+    console.log('✅ [getNews] Resposta recebida:', response.status);
+
+    // LOG COMPLETO DA RESPOSTA
+    console.log('📄 [getNews] Response keys:', Object.keys(response.data));
+    console.log('📄 [getNews] Response completa (500 chars):', JSON.stringify(response.data).substring(0, 500));
+
+    // Verificar rate limit
+    if (response.data.Information) {
+      console.warn('⚠️ [getNews] Rate limit:', response.data.Information);
+      return res.status(200).json({
+        Information: response.data.Information,
+        feed: []
+      });
+    }
+
+    // Verificar erro
+    if (response.data['Error Message']) {
+      console.error('❌ [getNews] Erro da API:', response.data['Error Message']);
+      return res.status(200).json({
+        'Error Message': response.data['Error Message'],
+        feed: []
+      });
+    }
+
+    // Verificar feed
+    if (response.data.feed && Array.isArray(response.data.feed)) {
+      console.log('📊 [getNews] Artigos encontrados:', response.data.feed.length);
+
+      if (response.data.feed.length > 0) {
+        console.log('📋 [getNews] Primeiro artigo:', JSON.stringify(response.data.feed[0]).substring(0, 200));
+      }
+
+      return res.status(200).json(response.data);
+    } else {
+      console.warn('⚠️ [getNews] Campo "feed" não encontrado ou não é array');
+      console.log('📋 [getNews] Campos disponíveis:', Object.keys(response.data));
+
+      return res.status(200).json({
+        ...response.data,
+        feed: []
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ [getNews] ERRO:', error.message);
+
+    if (error.response) {
+      console.error('📡 [getNews] Response Status:', error.response.status);
+      console.error('📄 [getNews] Response Data:', JSON.stringify(error.response.data).substring(0, 500));
+    }
+
+    return res.status(500).json({
+      error: error.message,
+      details: 'Erro ao buscar notícias'
+    });
+  }
+});
+
+// CLOUD FUNCTION 2: FOREX (FCS API)
+exports.getForex = onRequest({cors: true}, async (req, res) => {
+  try {
+    console.log('💱 [getForex] Requisição recebida');
+
+    const apiKey = process.env.FCS_API_KEY;
+
+    if (!apiKey) {
+      throw new Error('FCS API key não configurada');
+    }
+
+    console.log('🔑 [getForex] API Key disponível');
+
+    // Pares padrão de Forex
+    const pairs = 'EUR/USD,GBP/USD,USD/JPY,AUD/USD,USD/CAD,NZD/USD,EUR/GBP';
+
+    const url = `https://fcsapi.com/api-v3/forex/latest?symbol=${pairs}&access_key=${apiKey}`;
+
+    console.log('🌐 [getForex] Fazendo requisição para FCS API...');
+
+    const response = await axios.get(url, {
+      timeout: 10000,
+    });
+
+    console.log('✅ [getForex] Resposta recebida:', response.status);
+    console.log('📊 [getForex] Pares retornados:', response.data.response?.length || 0);
+
+    res.status(200).json(response.data);
+  } catch (error) {
+    console.error('❌ [getForex] Erro:', error.message);
+    res.status(500).json({
+      error: error.message,
+      details: 'Erro ao buscar dados Forex'
+    });
+  }
+});
+
+// CLOUD FUNCTION 3: AÇÕES (Alpha Vantage)
+exports.getStocks = onRequest({cors: true}, async (req, res) => {
+  try {
+    console.log('📈 [getStocks] Requisição recebida');
+
+    const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
+    const symbol = req.query.symbol || 'AAPL';
+
+    if (!apiKey) {
+      throw new Error('Alpha Vantage API key não configurada');
+    }
+
+    console.log('🔑 [getStocks] API Key disponível');
+    console.log('📊 [getStocks] Symbol solicitado:', symbol);
+
+    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${apiKey}`;
+
+    console.log('🌐 [getStocks] Fazendo requisição para Alpha Vantage...');
+
+    const response = await axios.get(url, {
+      timeout: 10000,
+    });
+
+    console.log('✅ [getStocks] Resposta recebida:', response.status);
+
+    res.status(200).json(response.data);
+  } catch (error) {
+    console.error('❌ [getStocks] Erro:', error.message);
+    res.status(500).json({
+      error: error.message,
+      details: 'Erro ao buscar dados de ações'
+    });
+  }
+});
+
+// CLOUD FUNCTION 4: MÚLTIPLAS AÇÕES (Top 5)
+exports.getTopStocks = onRequest({cors: true}, async (req, res) => {
+  try {
+    console.log('📈 [getTopStocks] Requisição recebida');
+
+    const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
+
+    if (!apiKey) {
+      throw new Error('Alpha Vantage API key não configurada');
+    }
+
+    const symbols = ['AAPL', 'GOOGL', 'MSFT', 'AMZN', 'TSLA'];
+    const results = [];
+
+    console.log('🔑 [getTopStocks] API Key disponível');
+    console.log('📊 [getTopStocks] Buscando ações:', symbols.join(', '));
+
+    // Buscar cada ação com delay de 500ms (rate limit da API)
+    for (const symbol of symbols) {
+      try {
+        const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${apiKey}`;
+
+        const response = await axios.get(url, { timeout: 10000 });
+
+        if (response.data['Global Quote']) {
+          results.push({
+            symbol: symbol,
+            data: response.data['Global Quote']
+          });
+        }
+
+        // Delay entre requisições
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (err) {
+        console.error(`⚠️ [getTopStocks] Erro ao buscar ${symbol}:`, err.message);
+      }
+    }
+
+    console.log('✅ [getTopStocks] Ações retornadas:', results.length);
+
+    res.status(200).json({ stocks: results });
+  } catch (error) {
+    console.error('❌ [getTopStocks] Erro:', error.message);
+    res.status(500).json({
+      error: error.message,
+      details: 'Erro ao buscar top ações'
+    });
+  }
+});
+
+// ========================================
+// CLOUD FUNCTION 5: CALENDÁRIO ECONÔMICO (FCS API)
+// ========================================
+exports.getEconomicCalendar = onRequest({cors: true}, async (req, res) => {
+  try {
+    console.log('📅 [getEconomicCalendar] Requisição recebida');
+    console.log('📅 [getEconomicCalendar] Method:', req.method);
+    console.log('📅 [getEconomicCalendar] Headers:', JSON.stringify(req.headers));
+
+    const apiKey = process.env.FCS_API_KEY;
+
+    if (!apiKey) {
+      const errorMsg = 'FCS API key não configurada no .env';
+      console.error('❌ [getEconomicCalendar]', errorMsg);
+      return res.status(500).json({
+        error: errorMsg,
+        details: 'Configure FCS_API_KEY no arquivo .env'
+      });
+    }
+
+    console.log('🔑 [getEconomicCalendar] API Key disponível:', apiKey.substring(0, 5) + '...');
+
+    // Parâmetros de data (próximos 7 dias)
+    const now = new Date();
+    const fromDate = new Date(now);
+    fromDate.setDate(now.getDate() - 1); // Ontem
+
+    const toDate = new Date(now);
+    toDate.setDate(now.getDate() + 7); // Próximos 7 dias
+
+    const from = fromDate.toISOString().split('T')[0]; // YYYY-MM-DD
+    const to = toDate.toISOString().split('T')[0];
+
+    console.log(`📆 [getEconomicCalendar] Buscando eventos de ${from} até ${to}`);
+
+    // URL CORRETA da FCS API - endpoint é /forex/economy_cal
+    const url = `https://fcsapi.com/api-v3/forex/economy_cal?from=${from}&to=${to}&access_key=${apiKey}`;
+
+    console.log('🌐 [getEconomicCalendar] URL (sem key):', url.replace(apiKey, 'HIDDEN'));
+    console.log('🌐 [getEconomicCalendar] Fazendo requisição...');
+
+    const response = await axios.get(url, {
+      timeout: 15000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'AlanoCryptoFX/1.0',
+      },
+    });
+
+    console.log('✅ [getEconomicCalendar] Resposta recebida');
+    console.log('📡 [getEconomicCalendar] Status:', response.status);
+    console.log('📊 [getEconomicCalendar] Response keys:', Object.keys(response.data));
+
+    // Verificar estrutura da resposta
+    if (!response.data) {
+      console.warn('⚠️ [getEconomicCalendar] Resposta vazia');
+      return res.status(200).json({
+        status: false,
+        response: [],
+        message: 'Resposta da API vazia'
+      });
+    }
+
+    console.log('📄 [getEconomicCalendar] Response data:', JSON.stringify(response.data).substring(0, 500));
+
+    // Verificar se é um erro da API
+    if (response.data.status === false || response.data.error) {
+      console.error('❌ [getEconomicCalendar] Erro da FCS API:', response.data.msg || response.data.error);
+      return res.status(200).json({
+        status: false,
+        response: [],
+        message: response.data.msg || response.data.error || 'Erro na API FCS',
+        apiError: true
+      });
+    }
+
+    // Extrair eventos
+    const events = response.data.response || [];
+    console.log('📊 [getEconomicCalendar] Total de eventos:', events.length);
+
+    if (events.length === 0) {
+      console.warn('⚠️ [getEconomicCalendar] Nenhum evento encontrado');
+      return res.status(200).json({
+        status: true,
+        response: [],
+        message: 'Nenhum evento disponível para o período'
+      });
+    }
+
+    // Log de amostra de eventos
+    console.log('📋 [getEconomicCalendar] Primeiro evento:', JSON.stringify(events[0]));
+    console.log('📋 [getEconomicCalendar] Campos do primeiro evento:', Object.keys(events[0]));
+
+    // Filtrar apenas eventos relevantes (remover feriados)
+    // A FCS API não retorna campo 'impact', então vamos filtrar por outros critérios
+    const filteredEvents = events.filter(event => {
+      // Remover feriados e eventos não-econômicos
+      const title = (event.title || event.event || '').toLowerCase();
+      const isHoliday = title.includes('day') &&
+                       (title.includes('holiday') ||
+                        title.includes('thanksgiving') ||
+                        title.includes('christmas') ||
+                        title.includes('independence'));
+
+      const isElection = title.includes('election');
+      const isGenericHoliday = title.includes('saint') ||
+                              title.includes('martyrdom') ||
+                              title.includes('liberation');
+
+      // Manter apenas eventos econômicos reais
+      const shouldKeep = !isHoliday && !isElection && !isGenericHoliday;
+
+      if (!shouldKeep) {
+        console.log('⚠️ [getEconomicCalendar] Filtrando evento não-econômico:', event.title || event.event);
+      }
+
+      return shouldKeep;
+    });
+
+    console.log('🎯 [getEconomicCalendar] Eventos filtrados:', filteredEvents.length);
+    console.log('✅ [getEconomicCalendar] Retornando eventos com sucesso');
+
+    return res.status(200).json({
+      status: true,
+      response: filteredEvents,
+      info: response.data.info || {},
+      meta: {
+        total: events.length,
+        filtered: filteredEvents.length,
+        from: from,
+        to: to
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [getEconomicCalendar] ERRO CAPTURADO:');
+    console.error('❌ [getEconomicCalendar] Mensagem:', error.message);
+    console.error('❌ [getEconomicCalendar] Stack:', error.stack);
+
+    if (error.response) {
+      console.error('📡 [getEconomicCalendar] Response Status:', error.response.status);
+      console.error('📡 [getEconomicCalendar] Response Headers:', JSON.stringify(error.response.headers));
+      console.error('📄 [getEconomicCalendar] Response Data:', JSON.stringify(error.response.data).substring(0, 500));
+    }
+
+    if (error.code) {
+      console.error('🔧 [getEconomicCalendar] Error Code:', error.code);
+    }
+
+    return res.status(500).json({
+      error: error.message,
+      details: 'Erro ao buscar calendário econômico',
+      errorCode: error.code,
+      errorType: error.name,
+      stack: error.stack?.substring(0, 500)
+    });
+  }
+});
