@@ -76,6 +76,8 @@ export default function Users() {
                   displayName: data.displayName || 'Sem nome',
                   photoURL: data.photoURL || '',
                   phone: data.phone || null,
+                  accountId: data.accountId || null,
+                  broker: data.broker || null,
                   approved: data.approved === true,  // Forçar boolean - true se explicitamente true
                   blocked: data.blocked === true,    // Forçar boolean - true se explicitamente true
                   accessUntil: data.accessUntil || null,
@@ -307,7 +309,9 @@ export default function Users() {
     const matchesSearch =
       user.displayName.toLowerCase().includes(term) ||
       user.email.toLowerCase().includes(term) ||
-      (user.phone && user.phone.includes(term));
+      (user.phone && user.phone.includes(term)) ||
+      (user.accountId && user.accountId.toLowerCase().includes(term)) ||
+      (user.broker && user.broker.toLowerCase().includes(term));
 
     if (!matchesSearch) return false;
 
@@ -392,7 +396,7 @@ export default function Users() {
             />
             <input
               type="text"
-              placeholder="Buscar por nome, email ou telefone..."
+              placeholder="Buscar por nome, email, telefone, ID da conta ou corretora..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-10 pr-4 py-2 bg-[#1e293b] border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-green-500"
@@ -408,6 +412,8 @@ export default function Users() {
                 <tr className="bg-gray-800 text-gray-400 text-sm">
                   <th className="px-6 py-3 text-left">Usuário</th>
                   <th className="px-6 py-3 text-left">Email / Telefone</th>
+                  <th className="px-6 py-3 text-left">ID da Conta</th>
+                  <th className="px-6 py-3 text-left">Corretora</th>
                   <th className="px-6 py-3 text-left">Cadastro</th>
                   <th className="px-6 py-3 text-left">Status</th>
                   <th className="px-6 py-3 text-left">Acesso Até</th>
@@ -435,6 +441,12 @@ export default function Users() {
                         <Phone size={16} />
                         {formatPhoneNumber(user.phone)}
                       </div>
+                    </td>
+                    <td className="px-6 py-4 text-gray-300">
+                      {user.accountId || '-'}
+                    </td>
+                    <td className="px-6 py-4 text-gray-300">
+                      {user.broker || '-'}
                     </td>
                     <td className="px-6 py-4 text-gray-300">
                       {user.createdAt?.toDate?.().toLocaleDateString('pt-BR') || 'N/A'}
