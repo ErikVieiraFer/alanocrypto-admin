@@ -603,8 +603,15 @@ exports.onSignalCreated = onDocumentCreated('signals/{signalId}', async (event) 
 exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (event) => {
     try {
       const post = event.data.data();
+      const postId = event.params.postId;
 
       console.log('📝 Novo post do Alano:', post.title);
+
+      // Verificar se notificação já foi enviada
+      if (post.notificationSent === true) {
+        console.log('⚠️ Notificação já enviada para este post, pulando...');
+        return null;
+      }
 
       // Buscar usuários
       const usersSnapshot = await admin.firestore()
@@ -649,6 +656,13 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       });
 
       console.log(`✅ Enviado: ${response.successCount} sucesso, ${response.failureCount} falhas`);
+
+      // Marcar notificação como enviada
+      await event.data.ref.update({
+        notificationSent: true,
+        notificationSentAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log('✅ Post marcado com notificationSent=true');
 
       // ═══════════════════════════════════════════════════════════
       // ENVIAR EMAILS PARA USUÁRIOS COM EMAIL NOTIFICATIONS ATIVO
@@ -836,6 +850,139 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       return null;
     }
   });
+
+// Enviar notificação quando usuário é mencionado no chat
+exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', async (event) => {
+  const messageId = event.params.messageId;
+  const messageData = event.data.data();
+
+  console.log(`📬 Nova mensagem criada: ${messageId}`);
+
+  if (!messageData.mentions || messageData.mentions.length === 0) {
+    console.log('⚠️ Mensagem sem menções, função encerrada');
+    return null;
+  }
+
+  console.log(`📝 Mensagem tem ${messageData.mentions.length} menção(ões)`);
+
+  try {
+    const senderName = messageData.userName || 'Alguém';
+    const senderId = messageData.userId;
+    const messageText = messageData.text || '';
+    const mentionedUserIds = messageData.mentions.map(m => m.userId);
+
+    console.log(`👥 Usuários mencionados: ${mentionedUserIds.join(', ')}`);
+
+    const usersSnapshot = await admin.firestore()
+      .collection('users')
+      .where(admin.firestore.FieldPath.documentId(), 'in', mentionedUserIds)
+      .get();
+
+    if (usersSnapshot.empty) {
+      console.log('⚠️ Nenhum usuário encontrado com os IDs mencionados');
+      return null;
+    }
+
+    console.log(`✅ Encontrados ${usersSnapshot.size} usuário(s) no Firestore`);
+
+    const notificationPromises = [];
+    let successCount = 0;
+    let errorCount = 0;
+
+    usersSnapshot.forEach((userDoc) => {
+      const userData = userDoc.data();
+      const fcmToken = userData.fcmToken;
+      const userId = userDoc.id;
+
+      if (userId === senderId) {
+        console.log(`⚠️ Pulando ${userId} (não notificar a si mesmo)`);
+        return;
+      }
+
+      if (!fcmToken) {
+        console.log(`⚠️ Usuário ${userId} não tem FCM token registrado`);
+        errorCount++;
+        return;
+      }
+
+      console.log(`📤 Preparando notificação para ${userId} (${userData.displayName || 'sem nome'})`);
+
+      const truncatedText = messageText.length > 100
+        ? `${messageText.substring(0, 100)}...`
+        : messageText;
+
+      const notification = {
+        token: fcmToken,
+        notification: {
+          title: `💬 ${senderName} mencionou você`,
+          body: truncatedText,
+        },
+        data: {
+          type: 'mention',
+          messageId: messageId,
+          senderId: senderId,
+          senderName: senderName,
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            sound: 'default',
+            channelId: 'chat_mentions',
+          },
+        },
+        apns: {
+          payload: {
+            aps: {
+              sound: 'default',
+              badge: 1,
+            },
+          },
+        },
+        webpush: {
+          notification: {
+            icon: '/icon.png',
+            badge: '/badge.png',
+          },
+        },
+      };
+
+      const promise = admin.messaging().send(notification)
+        .then((response) => {
+          console.log(`✅ Notificação enviada com sucesso para ${userId}: ${response}`);
+          successCount++;
+          return response;
+        })
+        .catch((error) => {
+          console.error(`❌ Erro ao enviar notificação para ${userId}:`, error);
+
+          if (error.code === 'messaging/invalid-registration-token' ||
+              error.code === 'messaging/registration-token-not-registered') {
+            console.log(`🗑️ Removendo FCM token inválido de ${userId}`);
+            return admin.firestore()
+              .collection('users')
+              .doc(userId)
+              .update({ fcmToken: admin.firestore.FieldValue.delete() });
+          }
+
+          errorCount++;
+          return null;
+        });
+
+      notificationPromises.push(promise);
+    });
+
+    await Promise.all(notificationPromises);
+
+    console.log(`✅ Processamento concluído: ${successCount} enviadas, ${errorCount} erros`);
+
+    return null;
+
+  } catch (error) {
+    console.error('❌ Erro crítico ao processar menções:', error);
+    return null;
+  }
+});
 
 // ═══════════════════════════════════════════════════════════
 // FUNÇÕES DE PROXY PARA APIs EXTERNAS

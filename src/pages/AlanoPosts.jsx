@@ -100,6 +100,13 @@ const AlanoPosts = () => {
         return;
       }
 
+      // VALIDAÇÃO: Se tem vídeo do YouTube, thumbnail é obrigatória
+      if (data.videoUrl && !imageFile && !editingPost?.imageUrl) {
+        toast.error('Thumbnail é obrigatória para posts com vídeo do YouTube');
+        setUploadingImage(false);
+        return;
+      }
+
       let imageUrl = editingPost?.imageUrl;
 
       // EDITAR post existente
@@ -232,15 +239,15 @@ const AlanoPosts = () => {
               >
                 {/* Thumbnail */}
                 <div className="relative h-48 bg-gray-800">
-                  {post.videoUrl ? (
+                  {post.imageUrl ? (
                     <img
-                      src={getYouTubeThumbnail(post.videoUrl)}
+                      src={post.imageUrl}
                       alt={post.title}
                       className="w-full h-full object-cover"
                     />
-                  ) : post.imageUrl ? (
+                  ) : post.videoUrl ? (
                     <img
-                      src={post.imageUrl}
+                      src={getYouTubeThumbnail(post.videoUrl)}
                       alt={post.title}
                       className="w-full h-full object-cover"
                     />
@@ -356,10 +363,13 @@ const AlanoPosts = () => {
             />
           </div>
 
-          {/* Image Upload */}
+          {/* Thumbnail Upload */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-2">
-              Imagem (max 5MB)
+              Thumbnail do Post *
+              <span className="block text-xs text-gray-500 mt-1">
+                Obrigatória para vídeos do YouTube • Recomendado 1280x720px (16:9) • Máx 5MB
+              </span>
             </label>
             <input
               type="file"
@@ -368,12 +378,13 @@ const AlanoPosts = () => {
               className="w-full px-4 py-2 bg-primary border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-white file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-black file:text-white hover:file:bg-gray-800"
             />
             {imagePreview && (
-              <div className="mt-4">
+              <div className="mt-4 border-2 border-green-500 rounded-lg p-2 bg-gray-900">
                 <img
                   src={imagePreview}
-                  alt="Preview"
+                  alt="Preview da Thumbnail"
                   className="w-full h-48 object-cover rounded-lg"
                 />
+                <p className="text-center text-green-500 text-sm mt-2">✓ Thumbnail pronta</p>
               </div>
             )}
           </div>
