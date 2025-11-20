@@ -11,6 +11,8 @@ import News from './pages/News';
 import NewsForm from './pages/NewsForm';
 import IntroVideo from './pages/IntroVideo';
 import Users from './pages/Users';
+import Courses from './pages/Courses';
+import UsefulLinks from './pages/UsefulLinks';
 import LoadingSpinner from './components/LoadingSpinner';
 
 // Protected Route Component
@@ -153,6 +155,22 @@ function App() {
             element={
               <ProtectedRoute>
                 <Users />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/courses"
+            element={
+              <ProtectedRoute>
+                <Courses />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/useful-links"
+            element={
+              <ProtectedRoute>
+                <UsefulLinks />
               </ProtectedRoute>
             }
           />

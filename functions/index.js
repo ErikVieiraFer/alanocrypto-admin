@@ -1,5 +1,6 @@
 const {onDocumentCreated} = require('firebase-functions/v2/firestore');
 const {onCall, onRequest} = require('firebase-functions/v2/https');
+const {onSchedule} = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 const { Resend } = require('resend');
 const axios = require('axios');
@@ -1344,6 +1345,855 @@ exports.getEconomicCalendar = onRequest({cors: true}, async (req, res) => {
       errorCode: error.code,
       errorType: error.name,
       stack: error.stack?.substring(0, 500)
+    });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// FUNÇÃO SCHEDULED - ATUALIZA CACHE DE MERCADOS A CADA 10 MIN
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * updateMarketsCache
+ * Atualiza o cache do Firestore com dados de Crypto, Stocks e Forex
+ * Roda a cada 10 minutos para manter dados atualizados
+ */
+exports.updateMarketsCache = onSchedule({
+  schedule: 'every 10 minutes',
+  timeZone: 'America/Sao_Paulo',
+  retryCount: 3,
+}, async (event) => {
+  console.log('🔄 [updateMarketsCache] Iniciando atualização do cache...');
+  const db = admin.firestore();
+
+  try {
+    // ═══ 1. CRYPTO (CoinGecko) ═══
+    console.log('📊 Buscando dados de Crypto...');
+    const cryptoResponse = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
+      params: {
+        vs_currency: 'usd',
+        order: 'market_cap_desc',
+        per_page: 100,
+        page: 1,
+        sparkline: false,
+        price_change_percentage: '24h',
+      },
+      timeout: 15000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+      },
+    });
+
+    await db.collection('market_cache').doc('crypto').set({
+      data: cryptoResponse.data,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      source: 'coingecko',
+    });
+    console.log(`✅ Crypto: ${cryptoResponse.data.length} moedas salvas`);
+
+    // ═══ 2. STOCKS (Twelve Data) ═══
+    console.log('📈 Buscando dados de Stocks...');
+    const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK.B', 'JPM', 'V'];
+    const companyNames = {
+      'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.',
+      'AMZN': 'Amazon.com Inc.', 'NVDA': 'NVIDIA Corp.', 'META': 'Meta Platforms',
+      'TSLA': 'Tesla Inc.', 'BRK.B': 'Berkshire Hathaway', 'JPM': 'JPMorgan Chase', 'V': 'Visa Inc.',
+    };
+    const marketCaps = {
+      'AAPL': 2950000000000, 'MSFT': 2810000000000, 'GOOGL': 1780000000000,
+      'AMZN': 1850000000000, 'NVDA': 1220000000000, 'META': 1290000000000,
+      'TSLA': 758000000000, 'BRK.B': 785000000000, 'JPM': 565000000000, 'V': 575000000000,
+    };
+
+    const stocksResponse = await axios.get('https://api.twelvedata.com/quote', {
+      params: {
+        symbol: stockSymbols.join(','),
+        apikey: '4be61c2528dd4e1a8ad18e41abfe92ea',
+      },
+      timeout: 15000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+      },
+    });
+
+    let stocksData = [];
+    for (let i = 0; i < stockSymbols.length; i++) {
+      const symbol = stockSymbols[i];
+      const quote = stocksResponse.data[symbol];
+
+      if (quote && quote.close && !quote.code) {
+        const currentPrice = parseFloat(quote.close);
+        const previousClose = parseFloat(quote.previous_close) || currentPrice;
+        const priceChange = previousClose > 0 ? ((currentPrice - previousClose) / previousClose) * 100 : 0;
+
+        stocksData.push({
+          id: symbol.toLowerCase().replace('.', ''),
+          symbol: symbol,
+          name: companyNames[symbol] || symbol,
+          current_price: currentPrice,
+          price_change_percentage_24h: priceChange,
+          market_cap: marketCaps[symbol] || 0,
+          image: `https://logo.clearbit.com/${symbol.toLowerCase().replace('.b', '')}.com`,
+          market_cap_rank: i + 1,
+        });
+      }
+    }
+
+    // Fallback: se API não retornou dados, usar dados simulados
+    if (stocksData.length === 0) {
+      console.log('⚠️ API Twelve Data sem dados, usando fallback simulado');
+      const basePrices = {
+        'AAPL': 189.95, 'MSFT': 378.91, 'GOOGL': 141.80, 'AMZN': 178.25, 'NVDA': 495.22,
+        'META': 505.95, 'TSLA': 238.45, 'BRK.B': 363.15, 'JPM': 195.82, 'V': 279.50,
+      };
+      stocksData = stockSymbols.map((symbol, index) => ({
+        id: symbol.toLowerCase().replace('.', ''),
+        symbol: symbol,
+        name: companyNames[symbol] || symbol,
+        current_price: basePrices[symbol] * (1 + (Math.random() - 0.5) * 0.02),
+        price_change_percentage_24h: (Math.random() - 0.5) * 4,
+        market_cap: marketCaps[symbol] || 0,
+        image: `https://logo.clearbit.com/${symbol.toLowerCase().replace('.b', '')}.com`,
+        market_cap_rank: index + 1,
+      }));
+    }
+
+    await db.collection('market_cache').doc('stocks').set({
+      data: stocksData,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      source: stocksData.length > 0 && stocksResponse.data[stockSymbols[0]]?.close ? 'twelvedata' : 'simulated',
+    });
+    console.log(`✅ Stocks: ${stocksData.length} ações salvas`);
+
+    // ═══ 3. FOREX (Dados simulados com variação) ═══
+    console.log('💱 Gerando dados de Forex...');
+    const forexPairs = [
+      { id: 'eurusd', symbol: 'EUR/USD', name: 'EUR/USD', base_price: 1.0850 },
+      { id: 'gbpusd', symbol: 'GBP/USD', name: 'GBP/USD', base_price: 1.2650 },
+      { id: 'usdjpy', symbol: 'USD/JPY', name: 'USD/JPY', base_price: 149.50 },
+      { id: 'usdchf', symbol: 'USD/CHF', name: 'USD/CHF', base_price: 0.8750 },
+      { id: 'audusd', symbol: 'AUD/USD', name: 'AUD/USD', base_price: 0.6520 },
+      { id: 'usdcad', symbol: 'USD/CAD', name: 'USD/CAD', base_price: 1.3680 },
+      { id: 'nzdusd', symbol: 'NZD/USD', name: 'NZD/USD', base_price: 0.5920 },
+      { id: 'eurgbp', symbol: 'EUR/GBP', name: 'EUR/GBP', base_price: 0.8580 },
+      { id: 'eurjpy', symbol: 'EUR/JPY', name: 'EUR/JPY', base_price: 162.20 },
+      { id: 'gbpjpy', symbol: 'GBP/JPY', name: 'GBP/JPY', base_price: 189.10 },
+    ];
+
+    const forexData = forexPairs.map((pair, index) => ({
+      id: pair.id,
+      symbol: pair.symbol,
+      name: pair.name,
+      current_price: pair.base_price * (1 + (Math.random() - 0.5) * 0.01),
+      price_change_percentage_24h: (Math.random() - 0.5) * 2,
+      market_cap: 0,
+      image: 'https://via.placeholder.com/32',
+      market_cap_rank: index + 1,
+    }));
+
+    await db.collection('market_cache').doc('forex').set({
+      data: forexData,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      source: 'simulated',
+    });
+    console.log(`✅ Forex: ${forexData.length} pares salvos`);
+
+    // ═══ 4. CALENDÁRIO ECONÔMICO (Trading Economics - 5 dias) ═══
+    // NOTA: Para dados completos, considerar plano pago (~$50/mês)
+    // Finnhub Economic Calendar: $50/mês | Trading Economics: ~$49/mês
+    console.log('📅 Buscando dados do Calendário Econômico...');
+    try {
+      // Calcular datas: 2 dias antes até 3 dias depois
+      const today = new Date();
+      const startDate = new Date(today);
+      startDate.setDate(today.getDate() - 2);
+      const endDate = new Date(today);
+      endDate.setDate(today.getDate() + 3);
+
+      const formatDate = (date) => {
+        return date.toISOString().split('T')[0];
+      };
+
+      const calendarResponse = await axios.get('https://api.tradingeconomics.com/calendar', {
+        params: {
+          c: 'guest:guest',
+          f: 'json',
+          d1: formatDate(startDate),
+          d2: formatDate(endDate),
+        },
+        timeout: 15000,
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+        },
+      });
+
+      let calendarData = [];
+      if (Array.isArray(calendarResponse.data)) {
+        calendarData = calendarResponse.data.map(event => ({
+          id: event.CalendarId || `${event.Date}_${event.Event}`,
+          date: event.Date,
+          country: event.Country,
+          category: event.Category,
+          event: event.Event,
+          reference: event.Reference,
+          source: event.Source,
+          actual: event.Actual,
+          previous: event.Previous,
+          forecast: event.Forecast,
+          importance: event.Importance || 1,
+          currency: event.Currency,
+        }));
+      }
+
+      await db.collection('market_cache').doc('economic_calendar').set({
+        data: calendarData,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: 'tradingeconomics',
+        dateRange: {
+          start: formatDate(startDate),
+          end: formatDate(endDate),
+        },
+      });
+      console.log(`✅ Calendário: ${calendarData.length} eventos salvos`);
+    } catch (calError) {
+      console.error('⚠️ Erro no calendário econômico:', calError.message);
+      // Não falha a função inteira se o calendário falhar
+    }
+
+    // ═══ 5. NOTÍCIAS (NewsAPI ou similar) ═══
+    console.log('📰 Buscando notícias...');
+    try {
+      // Usar NewsAPI para buscar notícias de crypto/finanças
+      const newsResponse = await axios.get('https://newsapi.org/v2/everything', {
+        params: {
+          q: 'cryptocurrency OR bitcoin OR forex OR stocks',
+          language: 'pt',
+          sortBy: 'publishedAt',
+          pageSize: 20,
+          apiKey: 'e3c0c2fbb3414c999b76db49cc1cd150',
+        },
+        timeout: 15000,
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+        },
+      });
+
+      let newsData = [];
+      if (newsResponse.data && newsResponse.data.articles) {
+        newsData = newsResponse.data.articles.map((article, index) => ({
+          id: `news_${index}_${Date.now()}`,
+          title: article.title,
+          description: article.description,
+          url: article.url,
+          urlToImage: article.urlToImage,
+          publishedAt: article.publishedAt,
+          source: article.source?.name || 'Unknown',
+          author: article.author,
+        }));
+      }
+
+      // Se NewsAPI falhar, usar dados de exemplo
+      if (newsData.length === 0) {
+        newsData = [
+          {
+            id: 'news_1',
+            title: 'Bitcoin atinge nova máxima histórica',
+            description: 'A principal criptomoeda do mundo continua sua trajetória de alta...',
+            url: '#',
+            urlToImage: 'https://via.placeholder.com/400x200',
+            publishedAt: new Date().toISOString(),
+            source: 'Crypto News',
+            author: 'Redação',
+          },
+          {
+            id: 'news_2',
+            title: 'Fed mantém taxas de juros estáveis',
+            description: 'O Federal Reserve decidiu manter as taxas de juros inalteradas...',
+            url: '#',
+            urlToImage: 'https://via.placeholder.com/400x200',
+            publishedAt: new Date().toISOString(),
+            source: 'Financial Times',
+            author: 'Redação',
+          },
+          {
+            id: 'news_3',
+            title: 'Ethereum 2.0 completa mais uma atualização',
+            description: 'A rede Ethereum continua seu processo de migração para proof-of-stake...',
+            url: '#',
+            urlToImage: 'https://via.placeholder.com/400x200',
+            publishedAt: new Date().toISOString(),
+            source: 'Crypto Daily',
+            author: 'Redação',
+          },
+        ];
+      }
+
+      await db.collection('market_cache').doc('news').set({
+        data: newsData,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: newsData.length > 3 ? 'newsapi' : 'simulated',
+      });
+      console.log(`✅ Notícias: ${newsData.length} artigos salvos`);
+    } catch (newsError) {
+      console.error('⚠️ Erro nas notícias:', newsError.message);
+    }
+
+    console.log('🎉 [updateMarketsCache] Cache atualizado com sucesso!');
+  } catch (error) {
+    console.error('❌ [updateMarketsCache] Erro:', error.message);
+    throw error;
+  }
+});
+
+/**
+ * refreshMarketsCache
+ * Endpoint HTTP para forçar atualização manual do cache
+ */
+exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
+  console.log('🔄 [refreshMarketsCache] Forçando atualização do cache...');
+  const db = admin.firestore();
+
+  try {
+    // ═══ 1. CRYPTO ═══
+    let cryptoCount = 0;
+    try {
+      const cryptoResponse = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
+        params: {
+          vs_currency: 'usd',
+          order: 'market_cap_desc',
+          per_page: 100,
+          page: 1,
+          sparkline: false,
+          price_change_percentage: '24h',
+        },
+        timeout: 15000,
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+        },
+      });
+
+      await db.collection('market_cache').doc('crypto').set({
+        data: cryptoResponse.data,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: 'coingecko',
+      });
+      cryptoCount = cryptoResponse.data?.length || 0;
+    } catch (cryptoError) {
+      console.error('⚠️ Erro no crypto (CoinGecko):', cryptoError.message);
+    }
+
+    // ═══ 2. STOCKS ═══
+    let stocksCount = 0;
+    try {
+      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK.B', 'JPM', 'V'];
+      const companyNames = {
+        'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.',
+        'AMZN': 'Amazon.com Inc.', 'NVDA': 'NVIDIA Corp.', 'META': 'Meta Platforms',
+        'TSLA': 'Tesla Inc.', 'BRK.B': 'Berkshire Hathaway', 'JPM': 'JPMorgan Chase', 'V': 'Visa Inc.',
+      };
+      const marketCaps = {
+        'AAPL': 2950000000000, 'MSFT': 2810000000000, 'GOOGL': 1780000000000,
+        'AMZN': 1850000000000, 'NVDA': 1220000000000, 'META': 1290000000000,
+        'TSLA': 758000000000, 'BRK.B': 785000000000, 'JPM': 565000000000, 'V': 575000000000,
+      };
+
+      const stocksResponse = await axios.get('https://api.twelvedata.com/quote', {
+        params: {
+          symbol: stockSymbols.join(','),
+          apikey: '4be61c2528dd4e1a8ad18e41abfe92ea',
+        },
+        timeout: 15000,
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+        },
+      });
+
+      let stocksData = [];
+      for (let i = 0; i < stockSymbols.length; i++) {
+        const symbol = stockSymbols[i];
+        const quote = stocksResponse.data[symbol];
+
+        if (quote && quote.close && !quote.code) {
+          const currentPrice = parseFloat(quote.close);
+          const previousClose = parseFloat(quote.previous_close) || currentPrice;
+          const priceChange = previousClose > 0 ? ((currentPrice - previousClose) / previousClose) * 100 : 0;
+
+          stocksData.push({
+            id: symbol.toLowerCase().replace('.', ''),
+            symbol: symbol,
+            name: companyNames[symbol] || symbol,
+            current_price: currentPrice,
+            price_change_percentage_24h: priceChange,
+            market_cap: marketCaps[symbol] || 0,
+            image: `https://logo.clearbit.com/${symbol.toLowerCase().replace('.b', '')}.com`,
+            market_cap_rank: i + 1,
+          });
+        }
+      }
+
+      await db.collection('market_cache').doc('stocks').set({
+        data: stocksData,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: 'twelvedata',
+      });
+      stocksCount = stocksData.length;
+    } catch (stocksError) {
+      console.error('⚠️ Erro nos stocks (Twelve Data):', stocksError.message);
+    }
+
+    // ═══ 3. FOREX ═══
+    const forexPairs = [
+      { id: 'eurusd', symbol: 'EUR/USD', name: 'EUR/USD', base_price: 1.0850 },
+      { id: 'gbpusd', symbol: 'GBP/USD', name: 'GBP/USD', base_price: 1.2650 },
+      { id: 'usdjpy', symbol: 'USD/JPY', name: 'USD/JPY', base_price: 149.50 },
+      { id: 'usdchf', symbol: 'USD/CHF', name: 'USD/CHF', base_price: 0.8750 },
+      { id: 'audusd', symbol: 'AUD/USD', name: 'AUD/USD', base_price: 0.6520 },
+      { id: 'usdcad', symbol: 'USD/CAD', name: 'USD/CAD', base_price: 1.3680 },
+      { id: 'nzdusd', symbol: 'NZD/USD', name: 'NZD/USD', base_price: 0.5920 },
+      { id: 'eurgbp', symbol: 'EUR/GBP', name: 'EUR/GBP', base_price: 0.8580 },
+      { id: 'eurjpy', symbol: 'EUR/JPY', name: 'EUR/JPY', base_price: 162.20 },
+      { id: 'gbpjpy', symbol: 'GBP/JPY', name: 'GBP/JPY', base_price: 189.10 },
+    ];
+
+    const forexData = forexPairs.map((pair, index) => ({
+      id: pair.id,
+      symbol: pair.symbol,
+      name: pair.name,
+      current_price: pair.base_price * (1 + (Math.random() - 0.5) * 0.01),
+      price_change_percentage_24h: (Math.random() - 0.5) * 2,
+      market_cap: 0,
+      image: 'https://via.placeholder.com/32',
+      market_cap_rank: index + 1,
+    }));
+
+    await db.collection('market_cache').doc('forex').set({
+      data: forexData,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      source: 'simulated',
+    });
+
+    // ═══ 4. CALENDÁRIO ECONÔMICO (Trading Economics) ═══
+    let calendarCount = 0;
+    try {
+      const today = new Date();
+      const startDate = new Date(today);
+      startDate.setDate(today.getDate() - 2);
+      const endDate = new Date(today);
+      endDate.setDate(today.getDate() + 3);
+
+      const formatDate = (date) => date.toISOString().split('T')[0];
+
+      const calendarResponse = await axios.get('https://api.tradingeconomics.com/calendar', {
+        params: {
+          c: 'guest:guest',
+          f: 'json',
+          d1: formatDate(startDate),
+          d2: formatDate(endDate),
+        },
+        timeout: 15000,
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+        },
+      });
+
+      let calendarData = [];
+      if (Array.isArray(calendarResponse.data)) {
+        calendarData = calendarResponse.data.map(event => ({
+          id: event.CalendarId || `${event.Date}_${event.Event}`,
+          date: event.Date,
+          country: event.Country,
+          category: event.Category,
+          event: event.Event,
+          reference: event.Reference,
+          source: event.Source,
+          actual: event.Actual,
+          previous: event.Previous,
+          forecast: event.Forecast,
+          importance: event.Importance || 1,
+          currency: event.Currency,
+        }));
+      }
+
+      await db.collection('market_cache').doc('economic_calendar').set({
+        data: calendarData,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: 'tradingeconomics',
+        dateRange: { start: formatDate(startDate), end: formatDate(endDate) },
+      });
+      calendarCount = calendarData.length;
+    } catch (calError) {
+      console.error('⚠️ Erro no calendário:', calError.message);
+    }
+
+    // ═══ 5. NOTÍCIAS ═══
+    let newsCount = 0;
+    try {
+      const newsResponse = await axios.get('https://newsapi.org/v2/everything', {
+        params: {
+          q: 'cryptocurrency OR bitcoin OR forex OR stocks',
+          language: 'pt',
+          sortBy: 'publishedAt',
+          pageSize: 20,
+          apiKey: 'e3c0c2fbb3414c999b76db49cc1cd150',
+        },
+        timeout: 15000,
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+        },
+      });
+
+      let newsData = [];
+      if (newsResponse.data && newsResponse.data.articles) {
+        newsData = newsResponse.data.articles.map((article, index) => ({
+          id: `news_${index}_${Date.now()}`,
+          title: article.title,
+          description: article.description,
+          url: article.url,
+          urlToImage: article.urlToImage,
+          publishedAt: article.publishedAt,
+          source: article.source?.name || 'Unknown',
+          author: article.author,
+        }));
+      }
+
+      if (newsData.length === 0) {
+        newsData = [
+          { id: 'news_1', title: 'Bitcoin atinge nova máxima histórica', description: 'A principal criptomoeda do mundo continua sua trajetória de alta...', url: '#', urlToImage: 'https://via.placeholder.com/400x200', publishedAt: new Date().toISOString(), source: 'Crypto News', author: 'Redação' },
+          { id: 'news_2', title: 'Fed mantém taxas de juros estáveis', description: 'O Federal Reserve decidiu manter as taxas de juros inalteradas...', url: '#', urlToImage: 'https://via.placeholder.com/400x200', publishedAt: new Date().toISOString(), source: 'Financial Times', author: 'Redação' },
+          { id: 'news_3', title: 'Ethereum 2.0 completa mais uma atualização', description: 'A rede Ethereum continua seu processo de migração para proof-of-stake...', url: '#', urlToImage: 'https://via.placeholder.com/400x200', publishedAt: new Date().toISOString(), source: 'Crypto Daily', author: 'Redação' },
+        ];
+      }
+
+      await db.collection('market_cache').doc('news').set({
+        data: newsData,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: newsData.length > 3 ? 'newsapi' : 'simulated',
+      });
+      newsCount = newsData.length;
+    } catch (newsError) {
+      console.error('⚠️ Erro nas notícias:', newsError.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Cache atualizado com sucesso',
+      crypto: cryptoCount,
+      stocks: stocksCount,
+      forex: 10,
+      calendar: calendarCount,
+      news: newsCount,
+    });
+  } catch (error) {
+    console.error('❌ [refreshMarketsCache] Erro:', error.message);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// FUNÇÕES DE API DE MERCADOS (CoinGecko)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * getGlobalCryptoData
+ * Retorna dados globais do mercado cripto via CoinGecko API
+ * Endpoint: https://api.coingecko.com/api/v3/global
+ */
+exports.getGlobalCryptoData = onRequest({cors: true}, async (req, res) => {
+  try {
+    console.log('📊 [getGlobalCryptoData] Buscando dados globais da CoinGecko...');
+
+    const response = await axios.get('https://api.coingecko.com/api/v3/global', {
+      timeout: 10000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+      },
+    });
+
+    console.log('✅ [getGlobalCryptoData] Dados globais obtidos com sucesso');
+
+    return res.status(200).json({
+      success: true,
+      data: response.data.data,
+    });
+  } catch (error) {
+    console.error('❌ [getGlobalCryptoData] Erro:', error.message);
+    if (error.response) {
+      console.error('📡 [getGlobalCryptoData] Status:', error.response.status);
+      console.error('📡 [getGlobalCryptoData] Data:', error.response.data);
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      details: 'Erro ao buscar dados globais da CoinGecko',
+    });
+  }
+});
+
+/**
+ * getCryptoMarkets
+ * Retorna lista de top criptomoedas com preços e dados de mercado
+ * Endpoint: https://api.coingecko.com/api/v3/coins/markets
+ * Query params: per_page (default: 100), page (default: 1)
+ */
+exports.getCryptoMarkets = onRequest({cors: true}, async (req, res) => {
+  try {
+    const perPage = req.query.per_page || 100;
+    const page = req.query.page || 1;
+
+    console.log(`📊 [getCryptoMarkets] Buscando top ${perPage} criptomoedas (página ${page})...`);
+
+    const response = await axios.get('https://api.coingecko.com/api/v3/coins/markets', {
+      params: {
+        vs_currency: 'usd',
+        order: 'market_cap_desc',
+        per_page: perPage,
+        page: page,
+        sparkline: false,
+        price_change_percentage: '24h',
+      },
+      timeout: 10000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+      },
+    });
+
+    console.log(`✅ [getCryptoMarkets] ${response.data.length} moedas obtidas com sucesso`);
+
+    return res.status(200).json({
+      success: true,
+      data: response.data,
+    });
+  } catch (error) {
+    console.error('❌ [getCryptoMarkets] Erro:', error.message);
+    if (error.response) {
+      console.error('📡 [getCryptoMarkets] Status:', error.response.status);
+      console.error('📡 [getCryptoMarkets] Data:', error.response.data);
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      details: 'Erro ao buscar mercados de criptomoedas',
+    });
+  }
+});
+
+/**
+ * searchCrypto
+ * Busca criptomoedas por nome ou símbolo
+ * Endpoint: https://api.coingecko.com/api/v3/search
+ * Query param obrigatório: q (termo de busca)
+ */
+exports.searchCrypto = onRequest({cors: true}, async (req, res) => {
+  try {
+    const query = req.query.q || '';
+
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        error: 'Query parameter "q" is required',
+        details: 'Parâmetro "q" é obrigatório para busca',
+      });
+    }
+
+    console.log(`🔍 [searchCrypto] Buscando: "${query}"...`);
+
+    const response = await axios.get('https://api.coingecko.com/api/v3/search', {
+      params: {
+        query: query,
+      },
+      timeout: 10000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+      },
+    });
+
+    console.log(`✅ [searchCrypto] ${response.data.coins.length} resultados encontrados`);
+
+    return res.status(200).json({
+      success: true,
+      data: response.data.coins,
+    });
+  } catch (error) {
+    console.error('❌ [searchCrypto] Erro:', error.message);
+    if (error.response) {
+      console.error('📡 [searchCrypto] Status:', error.response.status);
+      console.error('📡 [searchCrypto] Data:', error.response.data);
+    }
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      details: 'Erro ao buscar criptomoedas',
+    });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// FUNÇÕES DE API DE AÇÕES (Stocks)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * getStocksData
+ * Retorna dados das principais ações via Alpha Vantage API
+ * Top 10 ações: AAPL, MSFT, GOOGL, AMZN, TSLA, META, NVDA, NFLX, AMD, INTC
+ */
+exports.getStocksData = onRequest({cors: true}, async (req, res) => {
+  try {
+    console.log('📈 [getStocksData] Buscando dados de ações via Twelve Data...');
+
+    const apiKey = '4be61c2528dd4e1a8ad18e41abfe92ea';
+    const symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK.B', 'JPM', 'V'];
+
+    // Nomes das empresas para exibição
+    const companyNames = {
+      'AAPL': 'Apple Inc.',
+      'MSFT': 'Microsoft Corp.',
+      'GOOGL': 'Alphabet Inc.',
+      'AMZN': 'Amazon.com Inc.',
+      'NVDA': 'NVIDIA Corp.',
+      'META': 'Meta Platforms',
+      'TSLA': 'Tesla Inc.',
+      'BRK.B': 'Berkshire Hathaway',
+      'JPM': 'JPMorgan Chase',
+      'V': 'Visa Inc.',
+    };
+
+    // Market caps aproximados (em bilhões) - atualizados periodicamente
+    const marketCaps = {
+      'AAPL': 2950000000000,
+      'MSFT': 2810000000000,
+      'GOOGL': 1780000000000,
+      'AMZN': 1850000000000,
+      'NVDA': 1220000000000,
+      'META': 1290000000000,
+      'TSLA': 758000000000,
+      'BRK.B': 785000000000,
+      'JPM': 565000000000,
+      'V': 575000000000,
+    };
+
+    // Buscar preços atuais e variação - usando batch request
+    const response = await axios.get('https://api.twelvedata.com/quote', {
+      params: {
+        symbol: symbols.join(','),
+        apikey: apiKey,
+      },
+      timeout: 15000,
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
+      },
+    });
+
+    const data = response.data;
+    const stocksData = [];
+
+    // Processar resposta (pode ser objeto único ou múltiplos)
+    for (let i = 0; i < symbols.length; i++) {
+      const symbol = symbols[i];
+      const quote = data[symbol] || data;
+
+      if (quote && quote.close && !quote.code) {
+        const currentPrice = parseFloat(quote.close);
+        const previousClose = parseFloat(quote.previous_close) || currentPrice;
+        const priceChange = previousClose > 0 ? ((currentPrice - previousClose) / previousClose) * 100 : 0;
+
+        stocksData.push({
+          id: symbol.toLowerCase().replace('.', ''),
+          symbol: symbol,
+          name: companyNames[symbol] || symbol,
+          current_price: currentPrice,
+          price_change_percentage_24h: priceChange,
+          market_cap: marketCaps[symbol] || 0,
+          image: `https://logo.clearbit.com/${symbol.toLowerCase().replace('.b', '')}.com`,
+          market_cap_rank: i + 1,
+        });
+      } else {
+        console.warn(`⚠️ [getStocksData] Dados incompletos para ${symbol}:`, quote?.code || 'sem dados');
+      }
+    }
+
+    console.log(`✅ [getStocksData] ${stocksData.length}/${symbols.length} ações obtidas com sucesso`);
+
+    return res.status(200).json({
+      success: true,
+      data: stocksData,
+    });
+  } catch (error) {
+    console.error('❌ [getStocksData] Erro:', error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      details: 'Erro ao buscar dados de ações',
+    });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// FUNÇÕES DE API DE FOREX
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * getForexData
+ * Retorna dados dos principais pares de moedas Forex
+ * Top 10 pares: EUR/USD, GBP/USD, USD/JPY, USD/CHF, AUD/USD, USD/CAD, NZD/USD, EUR/GBP, EUR/JPY, GBP/JPY
+ */
+exports.getForexData = onRequest({cors: true}, async (req, res) => {
+  try {
+    console.log('💱 [getForexData] Buscando dados de Forex...');
+
+    const pairs = [
+      { from: 'EUR', to: 'USD', name: 'EUR/USD' },
+      { from: 'GBP', to: 'USD', name: 'GBP/USD' },
+      { from: 'USD', to: 'JPY', name: 'USD/JPY' },
+      { from: 'USD', to: 'CHF', name: 'USD/CHF' },
+      { from: 'AUD', to: 'USD', name: 'AUD/USD' },
+      { from: 'USD', to: 'CAD', name: 'USD/CAD' },
+      { from: 'NZD', to: 'USD', name: 'NZD/USD' },
+      { from: 'EUR', to: 'GBP', name: 'EUR/GBP' },
+      { from: 'EUR', to: 'JPY', name: 'EUR/JPY' },
+      { from: 'GBP', to: 'JPY', name: 'GBP/JPY' },
+    ];
+
+    // Gerar dados simulados (pode ser substituído por API real posteriormente)
+    const forexData = pairs.map((pair, index) => ({
+      id: pair.name.toLowerCase().replace('/', ''),
+      symbol: pair.name,
+      name: pair.name,
+      current_price: 1.0 + Math.random() * 0.5,
+      price_change_percentage_24h: (Math.random() - 0.5) * 2,
+      market_cap: 0,
+      image: 'https://via.placeholder.com/32',
+      market_cap_rank: index + 1,
+    }));
+
+    console.log(`✅ [getForexData] ${forexData.length} pares de Forex gerados`);
+
+    return res.status(200).json({
+      success: true,
+      data: forexData,
+    });
+  } catch (error) {
+    console.error('❌ [getForexData] Erro:', error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      details: 'Erro ao buscar dados de Forex',
     });
   }
 });

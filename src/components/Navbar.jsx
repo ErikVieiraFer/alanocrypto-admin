@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, TrendingUp, FileText, Users, LogOut, Menu, X, Newspaper, Video } from 'lucide-react';
+import { LayoutDashboard, TrendingUp, FileText, Users, LogOut, Menu, X, Newspaper, Video, GraduationCap, Link2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
@@ -17,6 +17,8 @@ const Navbar = () => {
     { name: 'Sinais', path: '/signals', icon: TrendingUp },
     { name: 'Posts do Alano', path: '/alano-posts', icon: FileText },
     { name: 'Notícias', path: '/news', icon: Newspaper },
+    { name: 'Cursos', path: '/courses', icon: GraduationCap },
+    { name: 'Links Úteis', path: '/useful-links', icon: Link2 },
     { name: 'Vídeo Introdução', path: '/intro-video', icon: Video },
     { name: 'Usuários', path: '/users', icon: Users },
   ];
