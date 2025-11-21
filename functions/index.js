@@ -614,28 +614,39 @@ exports.onSignalCreated = onDocumentCreated('signals/{signalId}', async (event) 
 exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (event) => {
   try {
     const postId = event.params.postId;
+    const postRef = event.data.ref;
     const post = event.data.data();
 
     console.log(`📝 Novo post do Alano: ${post.title}`);
 
     // ═══════════════════════════════════════════════════════════
-    // PROTEÇÃO ANTI-DUPLICAÇÃO
+    // PROTEÇÃO ANTI-DUPLICAÇÃO COM TRANSAÇÃO ATÔMICA
     // ═══════════════════════════════════════════════════════════
-    const postRef = admin.firestore().collection('alano_posts').doc(postId);
-    const postDoc = await postRef.get();
+    const alreadyProcessed = await admin.firestore().runTransaction(async (transaction) => {
+      const postDoc = await transaction.get(postRef);
+      const postData = postDoc.data();
 
-    if (postDoc.data().notificationsProcessed === true) {
-      console.log('⚠️ Notificações já foram processadas para este post, ignorando');
+      // Verificar AMBOS os campos (compatibilidade com posts antigos)
+      if (postData.notificationsProcessed === true || postData.notificationSent === true) {
+        console.log('⚠️ Notificações já foram processadas para este post, ignorando');
+        return true;
+      }
+
+      // Marcar como processado ATOMICAMENTE (evita race condition)
+      transaction.update(postRef, {
+        notificationsProcessed: true,
+        notificationSent: true, // Compatibilidade com script antigo
+        notificationsProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      return false;
+    });
+
+    if (alreadyProcessed) {
       return null;
     }
 
-    // Marcar como processado IMEDIATAMENTE (evita race condition)
-    await postRef.update({
-      notificationsProcessed: true,
-      notificationsProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    console.log('✅ Post marcado como processado');
+    console.log('✅ Post marcado como processado (transação atômica)');
 
     // ═══════════════════════════════════════════════════════════
     // BUSCAR USUÁRIOS APROVADOS
@@ -689,14 +700,31 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       console.log(`📱 Enviando push para ${uniqueTokens.length} dispositivos únicos`);
 
       const message = {
-        notification: {
-          title: '📝 Novo Post do Alano',
-          body: post.title,
-        },
+        // ❌ REMOVIDO: notification (causava notificação duplicada no PWA)
+        // Agora enviamos apenas dados (data-only message)
+        // O Service Worker (firebase-messaging-sw.js) intercepta e mostra UMA notificação
         data: {
           type: 'alano_post',
           postId: postId,
           title: post.title,
+          body: post.title, // Usado pelo Service Worker
+          notificationTitle: '📝 Novo Post do Alano', // Usado pelo Service Worker
+        },
+        android: {
+          priority: 'high',
+        },
+        apns: {
+          payload: {
+            aps: {
+              'content-available': 1, // Wake up app in background
+              'thread-id': postId,
+            },
+          },
+        },
+        webpush: {
+          headers: {
+            Urgency: 'high',
+          },
         },
       };
 

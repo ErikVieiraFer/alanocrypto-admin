@@ -1,5 +1,5 @@
 /**
- * Script para corrigir posts antigos que não têm o campo notificationSent
+ * Script para corrigir posts antigos que não têm os campos de proteção
  * Execute com: node fix-old-posts.js
  */
 
@@ -14,7 +14,7 @@ async function fixOldPosts() {
   console.log('🔧 Iniciando correção de posts antigos...\n');
 
   try {
-    // Buscar todos os posts que não têm o campo notificationSent
+    // Buscar todos os posts
     const postsSnapshot = await db
       .collection('alano_posts')
       .get();
@@ -29,17 +29,36 @@ async function fixOldPosts() {
     postsSnapshot.forEach((doc) => {
       const post = doc.data();
 
-      // Se o post não tem o campo notificationSent, adicionar como true
-      // (assumindo que posts antigos já enviaram notificação)
-      if (post.notificationSent === undefined || post.notificationSent === null) {
+      // Se o post não tem NENHUM dos campos de proteção, adicionar AMBOS
+      if (!post.notificationsProcessed && !post.notificationSent) {
         console.log(`✅ Atualizando post: ${doc.id} - "${post.title}"`);
         batch.update(doc.ref, {
-          notificationSent: true,
-          notificationSentAt: admin.firestore.FieldValue.serverTimestamp(),
+          notificationsProcessed: true,
+          notificationSent: true, // Compatibilidade
+          notificationsProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
         updatedCount++;
       } else {
-        alreadyOkCount++;
+        // Se tem um mas não tem o outro, adicionar o que falta
+        const updates = {};
+
+        if (!post.notificationsProcessed && post.notificationSent) {
+          updates.notificationsProcessed = true;
+          console.log(`🔄 Adicionando notificationsProcessed: ${doc.id}`);
+        }
+
+        if (post.notificationsProcessed && !post.notificationSent) {
+          updates.notificationSent = true;
+          console.log(`🔄 Adicionando notificationSent: ${doc.id}`);
+        }
+
+        if (Object.keys(updates).length > 0) {
+          updates.notificationsProcessedAt = admin.firestore.FieldValue.serverTimestamp();
+          batch.update(doc.ref, updates);
+          updatedCount++;
+        } else {
+          alreadyOkCount++;
+        }
       }
     });
 
