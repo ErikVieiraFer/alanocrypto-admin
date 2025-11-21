@@ -62,6 +62,7 @@ export const createPost = async (data) => {
       likes: 0,
       views: 0,
       createdAt: serverTimestamp(),
+      notificationSent: false, // Inicializar campo para Cloud Function
     });
 
     await logAction(ACTIONS.CREATE_POST, {

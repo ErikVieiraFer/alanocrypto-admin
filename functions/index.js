@@ -606,12 +606,53 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       const post = event.data.data();
       const postId = event.params.postId;
 
-      console.log('📝 Novo post do Alano:', post.title);
+      console.log('📝 Novo post do Alano criado:', post.title);
+      console.log('📝 Campo notificationSent:', post.notificationSent);
 
-      // Verificar se notificação já foi enviada
+      // IMPORTANTE: Verificar se notificação já foi enviada
+      // Se o campo já for true, significa que a função já rodou
       if (post.notificationSent === true) {
-        console.log('⚠️ Notificação já enviada para este post, pulando...');
+        console.log('⚠️ Notificação já enviada para este post (campo=true), pulando...');
         return null;
+      }
+
+      // PRIMEIRO: Usar transação para marcar e verificar atomicamente
+      const db = admin.firestore();
+      const postRef = db.collection('alano_posts').doc(postId);
+
+      try {
+        await db.runTransaction(async (transaction) => {
+          const postDoc = await transaction.get(postRef);
+
+          if (!postDoc.exists) {
+            console.log('❌ Post não existe na transação');
+            throw new Error('Post não existe');
+          }
+
+          const postData = postDoc.data();
+
+          // Verificar novamente dentro da transação
+          if (postData.notificationSent === true) {
+            console.log('⚠️ Notificação já foi enviada (verificado na transação)');
+            throw new Error('NOTIFICATION_ALREADY_SENT');
+          }
+
+          console.log('✅ Marcando post como notificationSent=true');
+          // Marcar como enviada
+          transaction.update(postRef, {
+            notificationSent: true,
+            notificationSentAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        });
+
+        console.log('✅ Post marcado com notificationSent=true (proteção contra duplicatas)');
+      } catch (error) {
+        if (error.message === 'NOTIFICATION_ALREADY_SENT') {
+          console.log('⚠️ Race condition detectada - notificação já enviada, cancelando função');
+          return null;
+        }
+        console.error('❌ Erro na transação:', error);
+        throw error;
       }
 
       // Buscar usuários
@@ -622,6 +663,7 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
         .get();
 
       if (usersSnapshot.empty) {
+        console.log('⚠️ Nenhum usuário com notificações ativas encontrado');
         return null;
       }
 
@@ -634,6 +676,7 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       });
 
       if (tokens.length === 0) {
+        console.log('⚠️ Nenhum FCM token encontrado');
         return null;
       }
 
@@ -645,7 +688,7 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
           body: post.title,
         },
         data: {
-          type: 'post',
+          type: 'alano_post',
           postId: event.params.postId,
           title: post.title,
         },
@@ -657,13 +700,6 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       });
 
       console.log(`✅ Enviado: ${response.successCount} sucesso, ${response.failureCount} falhas`);
-
-      // Marcar notificação como enviada
-      await event.data.ref.update({
-        notificationSent: true,
-        notificationSentAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      console.log('✅ Post marcado com notificationSent=true');
 
       // ═══════════════════════════════════════════════════════════
       // ENVIAR EMAILS PARA USUÁRIOS COM EMAIL NOTIFICATIONS ATIVO
@@ -887,6 +923,7 @@ exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', as
     console.log(`✅ Encontrados ${usersSnapshot.size} usuário(s) no Firestore`);
 
     const notificationPromises = [];
+    const firestoreNotificationPromises = [];
     let successCount = 0;
     let errorCount = 0;
 
@@ -900,17 +937,35 @@ exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', as
         return;
       }
 
+      const truncatedText = messageText.length > 100
+        ? `${messageText.substring(0, 100)}...`
+        : messageText;
+
+      // Criar notificação no Firestore
+      const firestoreNotificationPromise = admin.firestore().collection('notifications').add({
+        userId: userId,
+        type: 'mention',
+        title: `${senderName} mencionou você`,
+        content: truncatedText,
+        read: false,
+        relatedId: messageId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      }).then(() => {
+        console.log(`✅ Notificação Firestore criada para ${userId}`);
+      }).catch((error) => {
+        console.error(`❌ Erro ao criar notificação Firestore para ${userId}:`, error);
+      });
+
+      firestoreNotificationPromises.push(firestoreNotificationPromise);
+
+      // Enviar Push Notification
       if (!fcmToken) {
-        console.log(`⚠️ Usuário ${userId} não tem FCM token registrado`);
+        console.log(`⚠️ Usuário ${userId} não tem FCM token registrado - pulando push notification`);
         errorCount++;
         return;
       }
 
-      console.log(`📤 Preparando notificação para ${userId} (${userData.displayName || 'sem nome'})`);
-
-      const truncatedText = messageText.length > 100
-        ? `${messageText.substring(0, 100)}...`
-        : messageText;
+      console.log(`📤 Preparando notificação push para ${userId} (${userData.displayName || 'sem nome'})`);
 
       const notification = {
         token: fcmToken,
@@ -950,12 +1005,12 @@ exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', as
 
       const promise = admin.messaging().send(notification)
         .then((response) => {
-          console.log(`✅ Notificação enviada com sucesso para ${userId}: ${response}`);
+          console.log(`✅ Notificação push enviada com sucesso para ${userId}: ${response}`);
           successCount++;
           return response;
         })
         .catch((error) => {
-          console.error(`❌ Erro ao enviar notificação para ${userId}:`, error);
+          console.error(`❌ Erro ao enviar notificação push para ${userId}:`, error);
 
           if (error.code === 'messaging/invalid-registration-token' ||
               error.code === 'messaging/registration-token-not-registered') {
@@ -973,9 +1028,10 @@ exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', as
       notificationPromises.push(promise);
     });
 
-    await Promise.all(notificationPromises);
+    // Aguardar todas as notificações (Firestore e Push)
+    await Promise.all([...notificationPromises, ...firestoreNotificationPromises]);
 
-    console.log(`✅ Processamento concluído: ${successCount} enviadas, ${errorCount} erros`);
+    console.log(`✅ Processamento concluído: ${successCount} push enviadas, ${errorCount} erros`);
 
     return null;
 
@@ -2139,6 +2195,79 @@ exports.getStocksData = onRequest({cors: true}, async (req, res) => {
       success: false,
       error: error.message,
       details: 'Erro ao buscar dados de ações',
+    });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// FUNÇÃO DE MANUTENÇÃO - Corrigir posts antigos
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * fixOldPosts
+ * Corrige posts antigos que não têm o campo notificationSent
+ * Chame esta URL uma vez para corrigir todos os posts existentes
+ */
+exports.fixOldPosts = onRequest({cors: true}, async (req, res) => {
+  try {
+    console.log('🔧 [fixOldPosts] Iniciando correção de posts antigos...');
+
+    const postsSnapshot = await admin.firestore()
+      .collection('alano_posts')
+      .get();
+
+    console.log(`📊 Total de posts encontrados: ${postsSnapshot.size}`);
+
+    let updatedCount = 0;
+    let alreadyOkCount = 0;
+
+    const batch = admin.firestore().batch();
+    const updates = [];
+
+    postsSnapshot.forEach((doc) => {
+      const post = doc.data();
+
+      // Se o post não tem o campo notificationSent, adicionar como true
+      if (post.notificationSent === undefined || post.notificationSent === null) {
+        console.log(`✅ Atualizando post: ${doc.id} - "${post.title}"`);
+        batch.update(doc.ref, {
+          notificationSent: true,
+          notificationSentAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        updates.push({
+          id: doc.id,
+          title: post.title,
+        });
+        updatedCount++;
+      } else {
+        alreadyOkCount++;
+      }
+    });
+
+    // Commit do batch
+    if (updatedCount > 0) {
+      await batch.commit();
+      console.log(`✅ ${updatedCount} posts atualizados com sucesso!`);
+    } else {
+      console.log('✅ Nenhum post precisou ser atualizado!');
+    }
+
+    console.log(`✅ ${alreadyOkCount} posts já estavam OK`);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Posts antigos corrigidos com sucesso',
+      totalPosts: postsSnapshot.size,
+      updated: updatedCount,
+      alreadyOk: alreadyOkCount,
+      updatedPosts: updates,
+    });
+  } catch (error) {
+    console.error('❌ [fixOldPosts] Erro:', error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      details: 'Erro ao corrigir posts antigos',
     });
   }
 });
