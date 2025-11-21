@@ -11,6 +11,16 @@ const cors = require('cors')({origin: true});
 const resend = new Resend(process.env.RESEND_API_KEY || 'USUARIO_VAI_COLAR_AQUI');
 const EMAIL_FROM = process.env.EMAIL_FROM || 'onboarding@resend.dev';
 
+// Validar configuração de email na inicialização
+if (!process.env.RESEND_API_KEY) {
+  console.warn('⚠️ RESEND_API_KEY não configurada!');
+}
+if (!process.env.EMAIL_FROM || process.env.EMAIL_FROM === 'onboarding@resend.dev') {
+  console.warn('⚠️ EMAIL_FROM ainda usa endereço de desenvolvimento!');
+  console.warn('⚠️ Configure: suporte@alanocryptofx.com após setup DNS');
+  console.warn('📖 Ver: functions/SETUP_EMAIL.md');
+}
+
 admin.initializeApp();
 
 // ═══════════════════════════════════════════════════════════
@@ -602,94 +612,61 @@ exports.onSignalCreated = onDocumentCreated('signals/{signalId}', async (event) 
 
 // Enviar notificação quando novo post do Alano é criado
 exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (event) => {
-    try {
-      const post = event.data.data();
-      const postId = event.params.postId;
+  try {
+    const postId = event.params.postId;
+    const post = event.data.data();
 
-      console.log('📝 Novo post do Alano criado:', post.title);
-      console.log('📝 Campo notificationSent:', post.notificationSent);
+    console.log(`📝 Novo post do Alano: ${post.title}`);
 
-      // IMPORTANTE: Verificar se notificação já foi enviada
-      // Se o campo já for true, significa que a função já rodou
-      if (post.notificationSent === true) {
-        console.log('⚠️ Notificação já enviada para este post (campo=true), pulando...');
-        return null;
-      }
+    const usersSnapshot = await admin.firestore()
+      .collection('users')
+      .where('approved', '==', true)
+      .get();
 
-      // PRIMEIRO: Usar transação para marcar e verificar atomicamente
-      const db = admin.firestore();
-      const postRef = db.collection('alano_posts').doc(postId);
+    if (usersSnapshot.empty) {
+      console.log('⚠️ Nenhum usuário aprovado');
+      return null;
+    }
 
-      try {
-        await db.runTransaction(async (transaction) => {
-          const postDoc = await transaction.get(postRef);
+    const notificationBatch = admin.firestore().batch();
+    const tokens = [];
 
-          if (!postDoc.exists) {
-            console.log('❌ Post não existe na transação');
-            throw new Error('Post não existe');
-          }
+    usersSnapshot.forEach((userDoc) => {
+      const userData = userDoc.data();
 
-          const postData = postDoc.data();
+      const notificationRef = admin.firestore()
+        .collection('notifications')
+        .doc();
 
-          // Verificar novamente dentro da transação
-          if (postData.notificationSent === true) {
-            console.log('⚠️ Notificação já foi enviada (verificado na transação)');
-            throw new Error('NOTIFICATION_ALREADY_SENT');
-          }
-
-          console.log('✅ Marcando post como notificationSent=true');
-          // Marcar como enviada
-          transaction.update(postRef, {
-            notificationSent: true,
-            notificationSentAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-        });
-
-        console.log('✅ Post marcado com notificationSent=true (proteção contra duplicatas)');
-      } catch (error) {
-        if (error.message === 'NOTIFICATION_ALREADY_SENT') {
-          console.log('⚠️ Race condition detectada - notificação já enviada, cancelando função');
-          return null;
-        }
-        console.error('❌ Erro na transação:', error);
-        throw error;
-      }
-
-      // Buscar usuários
-      const usersSnapshot = await admin.firestore()
-        .collection('users')
-        .where('notificationsEnabled', '==', true)
-        .where('approved', '==', true)
-        .get();
-
-      if (usersSnapshot.empty) {
-        console.log('⚠️ Nenhum usuário com notificações ativas encontrado');
-        return null;
-      }
-
-      const tokens = [];
-      usersSnapshot.forEach(doc => {
-        const userData = doc.data();
-        if (userData.fcmToken) {
-          tokens.push(userData.fcmToken);
-        }
+      notificationBatch.set(notificationRef, {
+        userId: userDoc.id,
+        type: 'post',
+        title: '📝 Novo Post do Alano',
+        content: post.title,
+        read: false,
+        relatedId: postId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      if (tokens.length === 0) {
-        console.log('⚠️ Nenhum FCM token encontrado');
-        return null;
+      if (userData.fcmToken && userData.notificationsEnabled) {
+        tokens.push(userData.fcmToken);
       }
+    });
 
-      console.log(`📱 Enviando para ${tokens.length} usuários`);
+    await notificationBatch.commit();
+    console.log(`✅ ${usersSnapshot.size} notificações in-app criadas`);
+
+    if (tokens.length > 0) {
+      console.log(`📱 Enviando push para ${tokens.length} dispositivos`);
 
       const message = {
         notification: {
-          title: '📝 Novo Post do Alano!',
+          title: '📝 Novo Post do Alano',
           body: post.title,
         },
         data: {
           type: 'alano_post',
-          postId: event.params.postId,
+          postId: postId,
           title: post.title,
         },
       };
@@ -699,194 +676,40 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
         ...message,
       });
 
-      console.log(`✅ Enviado: ${response.successCount} sucesso, ${response.failureCount} falhas`);
+      console.log(`✅ Push: ${response.successCount} sucesso, ${response.failureCount} falhas`);
 
-      // ═══════════════════════════════════════════════════════════
-      // ENVIAR EMAILS PARA USUÁRIOS COM EMAIL NOTIFICATIONS ATIVO
-      // ═══════════════════════════════════════════════════════════
-
-      // Buscar usuários com notificações de email ativas
-      const emailUsersSnapshot = await admin.firestore()
-        .collection('users')
-        .where('emailNotifications', '==', true)
-        .where('approved', '==', true)
-        .get();
-
-      if (!emailUsersSnapshot.empty) {
-        const emails = [];
-        emailUsersSnapshot.forEach(doc => {
-          const userData = doc.data();
-          if (userData.email) {
-            emails.push(userData.email);
+      if (response.failureCount > 0) {
+        const tokensToRemove = [];
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success) {
+            tokensToRemove.push(tokens[idx]);
           }
         });
 
-        if (emails.length > 0) {
-          console.log(`📧 Enviando emails para ${emails.length} usuários`);
+        const batch = admin.firestore().batch();
+        for (const token of tokensToRemove) {
+          const userQuery = await admin.firestore()
+            .collection('users')
+            .where('fcmToken', '==', token)
+            .get();
 
-          // Template HTML do email
-          const emailHtml = `
-            <!DOCTYPE html>
-            <html>
-              <head>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <style>
-                  body {
-                    margin: 0;
-                    padding: 0;
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-                    background-color: #0a0a0a;
-                    color: #ffffff;
-                  }
-                  .container {
-                    max-width: 600px;
-                    margin: 0 auto;
-                    background-color: #1a1a1a;
-                  }
-                  .header {
-                    background: linear-gradient(135deg, #00ff01 0%, #00cc01 100%);
-                    padding: 40px 20px;
-                    text-align: center;
-                  }
-                  .header h1 {
-                    margin: 0;
-                    color: #0a0a0a;
-                    font-size: 28px;
-                    font-weight: bold;
-                  }
-                  .content {
-                    padding: 30px 20px;
-                  }
-                  .post-title {
-                    color: #00ff01;
-                    font-size: 24px;
-                    font-weight: bold;
-                    margin: 20px 0;
-                  }
-                  .post-content {
-                    background-color: #0a0a0a;
-                    border-left: 4px solid #00ff01;
-                    padding: 20px;
-                    margin: 20px 0;
-                    line-height: 1.6;
-                    color: #cccccc;
-                    white-space: pre-wrap;
-                  }
-                  .video-section {
-                    background-color: #2a2a2a;
-                    border-radius: 8px;
-                    padding: 20px;
-                    margin: 20px 0;
-                    text-align: center;
-                  }
-                  .video-link {
-                    display: inline-block;
-                    background: linear-gradient(135deg, #ff0000 0%, #cc0000 100%);
-                    color: #ffffff;
-                    padding: 14px 32px;
-                    text-decoration: none;
-                    border-radius: 8px;
-                    font-weight: bold;
-                    margin-top: 10px;
-                    transition: transform 0.2s;
-                  }
-                  .video-link:hover {
-                    transform: translateY(-2px);
-                  }
-                  .button {
-                    display: inline-block;
-                    background: linear-gradient(135deg, #00ff01 0%, #00cc01 100%);
-                    color: #0a0a0a;
-                    padding: 14px 32px;
-                    text-decoration: none;
-                    border-radius: 8px;
-                    font-weight: bold;
-                    margin: 20px 0;
-                    transition: transform 0.2s;
-                  }
-                  .button:hover {
-                    transform: translateY(-2px);
-                  }
-                  .footer {
-                    padding: 20px;
-                    text-align: center;
-                    color: #666666;
-                    font-size: 12px;
-                    border-top: 1px solid #333333;
-                  }
-                  .footer a {
-                    color: #00ff01;
-                    text-decoration: none;
-                  }
-                </style>
-              </head>
-              <body>
-                <div class="container">
-                  <div class="header">
-                    <h1>📝 AlanoCryptoFX</h1>
-                  </div>
-                  <div class="content">
-                    <h2 style="color: #00ff01; margin-top: 0;">Novo Post do Alano!</h2>
-
-                    <div class="post-title">
-                      ${post.title}
-                    </div>
-
-                    ${post.content ? `
-                    <div class="post-content">
-                      ${post.content}
-                    </div>
-                    ` : ''}
-
-                    ${post.videoUrl ? `
-                    <div class="video-section">
-                      <div style="color: #cccccc; margin-bottom: 10px;">
-                        🎥 Este post contém um vídeo
-                      </div>
-                      <a href="${post.videoUrl}" class="video-link" target="_blank">Assistir Vídeo</a>
-                    </div>
-                    ` : ''}
-
-                    <div style="text-align: center;">
-                      <a href="https://alanocryptofx-v2.web.app" class="button">Ver no App</a>
-                    </div>
-                  </div>
-                  <div class="footer">
-                    <p>© ${new Date().getFullYear()} AlanoCryptoFX. Todos os direitos reservados.</p>
-                    <p><a href="https://alanocryptofx-v2.web.app/settings">Desativar notificações por email</a></p>
-                  </div>
-                </div>
-              </body>
-            </html>
-          `;
-
-          // Enviar emails (um por vez para evitar rate limiting)
-          let emailsSent = 0;
-          for (const email of emails) {
-            try {
-              await resend.emails.send({
-                from: EMAIL_FROM,
-                to: email,
-                subject: `📝 ${post.title} - AlanoCryptoFX`,
-                html: emailHtml,
-              });
-              emailsSent++;
-            } catch (emailError) {
-              console.error(`❌ Erro ao enviar email para ${email}:`, emailError);
-            }
-          }
-
-          console.log(`✅ ${emailsSent} emails enviados com sucesso`);
+          userQuery.forEach(doc => {
+            batch.update(doc.ref, {
+              fcmToken: admin.firestore.FieldValue.delete()
+            });
+          });
         }
+        await batch.commit();
+        console.log(`🧹 ${tokensToRemove.length} tokens removidos`);
       }
-
-      return null;
-    } catch (error) {
-      console.error('❌ Erro ao enviar notificações:', error);
-      return null;
     }
-  });
+
+    return null;
+  } catch (error) {
+    console.error('❌ Erro:', error);
+    return null;
+  }
+});
 
 // Enviar notificação quando usuário é mencionado no chat
 exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', async (event) => {
@@ -1556,25 +1379,44 @@ exports.updateMarketsCache = onSchedule({
     });
     console.log(`✅ Forex: ${forexData.length} pares salvos`);
 
-    // ═══ 4. CALENDÁRIO ECONÔMICO (Trading Economics - 5 dias) ═══
-    // NOTA: Para dados completos, considerar plano pago (~$50/mês)
-    // Finnhub Economic Calendar: $50/mês | Trading Economics: ~$49/mês
-    console.log('📅 Buscando dados do Calendário Econômico...');
+    // ═══════════════════════════════════════════════════════════
+    // CALENDÁRIO ECONÔMICO - Trading Economics
+    // ═══════════════════════════════════════════════════════════
+    // SETUP:
+    // 1. Cliente compra API: tradingeconomics.com/api/pricing
+    // 2. Recebe credenciais (formato: usuario:senha)
+    // 3. Adicionar em .env: TRADING_ECONOMICS_KEY=usuario:senha
+    // 4. Deploy: firebase deploy --only functions:updateMarketsCache
+    //
+    // PLANO RECOMENDADO: Basic ($49/mês)
+    // - 100.000 requests/mês
+    // - Dados de 196 países
+    // - Histórico de 20 anos
+    // ═══════════════════════════════════════════════════════════
+
+    console.log('📅 Buscando Calendário Econômico...');
+
+    const tradingEconomicsKey = process.env.TRADING_ECONOMICS_KEY || 'guest:guest';
+
+    // Validar se ainda está usando credenciais gratuitas
+    if (tradingEconomicsKey === 'guest:guest') {
+      console.warn('⚠️ Usando credenciais gratuitas do Trading Economics');
+      console.warn('⚠️ Limitado a 3 requests/dia');
+      console.warn('⚠️ Para uso em produção, comprar API em: tradingeconomics.com/api/pricing');
+    }
+
     try {
-      // Calcular datas: 2 dias antes até 3 dias depois
       const today = new Date();
       const startDate = new Date(today);
       startDate.setDate(today.getDate() - 2);
       const endDate = new Date(today);
       endDate.setDate(today.getDate() + 3);
 
-      const formatDate = (date) => {
-        return date.toISOString().split('T')[0];
-      };
+      const formatDate = (date) => date.toISOString().split('T')[0];
 
       const calendarResponse = await axios.get('https://api.tradingeconomics.com/calendar', {
         params: {
-          c: 'guest:guest',
+          c: tradingEconomicsKey,  // ← USAR VARIÁVEL
           f: 'json',
           d1: formatDate(startDate),
           d2: formatDate(endDate),
@@ -1608,15 +1450,24 @@ exports.updateMarketsCache = onSchedule({
         data: calendarData,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         source: 'tradingeconomics',
+        apiMode: tradingEconomicsKey === 'guest:guest' ? 'FREE' : 'PAID',
         dateRange: {
           start: formatDate(startDate),
           end: formatDate(endDate),
         },
       });
+
       console.log(`✅ Calendário: ${calendarData.length} eventos salvos`);
+      console.log(`📊 Modo API: ${tradingEconomicsKey === 'guest:guest' ? 'GRATUITO' : 'PAGO'}`);
+
     } catch (calError) {
       console.error('⚠️ Erro no calendário econômico:', calError.message);
-      // Não falha a função inteira se o calendário falhar
+
+      // Se for erro de limite de requests
+      if (calError.response?.status === 429 || calError.message.includes('limit')) {
+        console.error('🚫 LIMITE DE REQUESTS ATINGIDO');
+        console.error('💡 Solução: Comprar API paga em tradingeconomics.com/api/pricing');
+      }
     }
 
     // ═══ 5. NOTÍCIAS (NewsAPI ou similar) ═══
@@ -1836,6 +1687,12 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
 
     // ═══ 4. CALENDÁRIO ECONÔMICO (Trading Economics) ═══
     let calendarCount = 0;
+    const tradingEconomicsKey = process.env.TRADING_ECONOMICS_KEY || 'guest:guest';
+
+    if (tradingEconomicsKey === 'guest:guest') {
+      console.warn('⚠️ Trading Economics em modo FREE - Considere upgrade para produção');
+    }
+
     try {
       const today = new Date();
       const startDate = new Date(today);
@@ -1847,7 +1704,7 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
 
       const calendarResponse = await axios.get('https://api.tradingeconomics.com/calendar', {
         params: {
-          c: 'guest:guest',
+          c: tradingEconomicsKey,  // ← USAR VARIÁVEL
           f: 'json',
           d1: formatDate(startDate),
           d2: formatDate(endDate),
@@ -1881,11 +1738,16 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
         data: calendarData,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         source: 'tradingeconomics',
+        apiMode: tradingEconomicsKey === 'guest:guest' ? 'FREE' : 'PAID',
         dateRange: { start: formatDate(startDate), end: formatDate(endDate) },
       });
       calendarCount = calendarData.length;
     } catch (calError) {
       console.error('⚠️ Erro no calendário:', calError.message);
+
+      if (calError.response?.status === 429 || calError.message.includes('limit')) {
+        console.error('🚫 LIMITE DE REQUESTS - Upgrade para API paga necessário');
+      }
     }
 
     // ═══ 5. NOTÍCIAS ═══
@@ -2325,4 +2187,56 @@ exports.getForexData = onRequest({cors: true}, async (req, res) => {
       details: 'Erro ao buscar dados de Forex',
     });
   }
+});
+
+// ═══════════════════════════════════════════════════════════
+// ENDPOINT DE STATUS - Verificar configuração das APIs
+// ═══════════════════════════════════════════════════════════
+
+exports.checkApiStatus = onRequest({cors: true}, async (req, res) => {
+  const status = {
+    tradingEconomics: {
+      configured: process.env.TRADING_ECONOMICS_KEY !== 'guest:guest',
+      mode: process.env.TRADING_ECONOMICS_KEY === 'guest:guest' ?
+        'FREE (3 requests/dia)' :
+        'PAID (100k requests/mês)',
+      key: process.env.TRADING_ECONOMICS_KEY ?
+        process.env.TRADING_ECONOMICS_KEY.substring(0, 8) + '...' :
+        'NÃO CONFIGURADA',
+    },
+    resend: {
+      configured: !!process.env.RESEND_API_KEY &&
+        process.env.RESEND_API_KEY !== 'SUA_CHAVE_API_RESEND_AQUI',
+      emailFrom: process.env.EMAIL_FROM || 'NÃO CONFIGURADO',
+      isProfessional: process.env.EMAIL_FROM !== 'onboarding@resend.dev' &&
+        process.env.EMAIL_FROM !== 'NÃO CONFIGURADO',
+    },
+    cache: {},
+  };
+
+  try {
+    const calendarDoc = await admin.firestore()
+      .collection('market_cache')
+      .doc('economic_calendar')
+      .get();
+
+    if (calendarDoc.exists) {
+      const data = calendarDoc.data();
+      status.cache.economicCalendar = {
+        lastUpdate: data.updatedAt?.toDate().toISOString(),
+        eventsCount: data.data?.length || 0,
+        dateRange: data.dateRange,
+        apiMode: data.apiMode || 'UNKNOWN',
+      };
+    } else {
+      status.cache.economicCalendar = {
+        status: 'NOT_FOUND',
+        message: 'Cache ainda não foi criado. Aguarde a função updateMarketsCache rodar.',
+      };
+    }
+  } catch (error) {
+    status.cache.error = error.message;
+  }
+
+  return res.status(200).json(status);
 });
