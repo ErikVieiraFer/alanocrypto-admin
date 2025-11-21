@@ -618,6 +618,28 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
 
     console.log(`📝 Novo post do Alano: ${post.title}`);
 
+    // ═══════════════════════════════════════════════════════════
+    // PROTEÇÃO ANTI-DUPLICAÇÃO
+    // ═══════════════════════════════════════════════════════════
+    const postRef = admin.firestore().collection('alano_posts').doc(postId);
+    const postDoc = await postRef.get();
+
+    if (postDoc.data().notificationsProcessed === true) {
+      console.log('⚠️ Notificações já foram processadas para este post, ignorando');
+      return null;
+    }
+
+    // Marcar como processado IMEDIATAMENTE (evita race condition)
+    await postRef.update({
+      notificationsProcessed: true,
+      notificationsProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log('✅ Post marcado como processado');
+
+    // ═══════════════════════════════════════════════════════════
+    // BUSCAR USUÁRIOS APROVADOS
+    // ═══════════════════════════════════════════════════════════
     const usersSnapshot = await admin.firestore()
       .collection('users')
       .where('approved', '==', true)
@@ -629,11 +651,12 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
     }
 
     const notificationBatch = admin.firestore().batch();
-    const tokens = [];
+    const tokens = new Set(); // Usar Set para eliminar duplicatas automaticamente
 
     usersSnapshot.forEach((userDoc) => {
       const userData = userDoc.data();
 
+      // Criar notificação in-app
       const notificationRef = admin.firestore()
         .collection('notifications')
         .doc();
@@ -648,16 +671,22 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
+      // Coletar tokens FCM únicos
       if (userData.fcmToken && userData.notificationsEnabled) {
-        tokens.push(userData.fcmToken);
+        tokens.add(userData.fcmToken); // Set elimina duplicatas automaticamente
       }
     });
 
     await notificationBatch.commit();
     console.log(`✅ ${usersSnapshot.size} notificações in-app criadas`);
 
-    if (tokens.length > 0) {
-      console.log(`📱 Enviando push para ${tokens.length} dispositivos`);
+    // ═══════════════════════════════════════════════════════════
+    // ENVIAR PUSH NOTIFICATIONS (FCM)
+    // ═══════════════════════════════════════════════════════════
+    const uniqueTokens = Array.from(tokens); // Converter Set para Array
+
+    if (uniqueTokens.length > 0) {
+      console.log(`📱 Enviando push para ${uniqueTokens.length} dispositivos únicos`);
 
       const message = {
         notification: {
@@ -672,35 +701,39 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       };
 
       const response = await admin.messaging().sendEachForMulticast({
-        tokens: tokens,
+        tokens: uniqueTokens,
         ...message,
       });
 
       console.log(`✅ Push: ${response.successCount} sucesso, ${response.failureCount} falhas`);
 
+      // Limpar tokens inválidos
       if (response.failureCount > 0) {
         const tokensToRemove = [];
         response.responses.forEach((resp, idx) => {
           if (!resp.success) {
-            tokensToRemove.push(tokens[idx]);
+            tokensToRemove.push(uniqueTokens[idx]);
+            console.log(`❌ Token inválido: ${uniqueTokens[idx].substring(0, 20)}...`);
           }
         });
 
-        const batch = admin.firestore().batch();
-        for (const token of tokensToRemove) {
-          const userQuery = await admin.firestore()
-            .collection('users')
-            .where('fcmToken', '==', token)
-            .get();
+        if (tokensToRemove.length > 0) {
+          const batch = admin.firestore().batch();
+          for (const token of tokensToRemove) {
+            const userQuery = await admin.firestore()
+              .collection('users')
+              .where('fcmToken', '==', token)
+              .get();
 
-          userQuery.forEach(doc => {
-            batch.update(doc.ref, {
-              fcmToken: admin.firestore.FieldValue.delete()
+            userQuery.forEach(doc => {
+              batch.update(doc.ref, {
+                fcmToken: admin.firestore.FieldValue.delete()
+              });
             });
-          });
+          }
+          await batch.commit();
+          console.log(`🧹 ${tokensToRemove.length} tokens removidos`);
         }
-        await batch.commit();
-        console.log(`🧹 ${tokensToRemove.length} tokens removidos`);
       }
     }
 
