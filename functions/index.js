@@ -11,16 +11,6 @@ const cors = require('cors')({origin: true});
 const resend = new Resend(process.env.RESEND_API_KEY || 'USUARIO_VAI_COLAR_AQUI');
 const EMAIL_FROM = process.env.EMAIL_FROM || 'onboarding@resend.dev';
 
-// Validar configuração de email na inicialização
-if (!process.env.RESEND_API_KEY) {
-  console.warn('⚠️ RESEND_API_KEY não configurada!');
-}
-if (!process.env.EMAIL_FROM || process.env.EMAIL_FROM === 'onboarding@resend.dev') {
-  console.warn('⚠️ EMAIL_FROM ainda usa endereço de desenvolvimento!');
-  console.warn('⚠️ Configure: suporte@alanocryptofx.com após setup DNS');
-  console.warn('📖 Ver: functions/SETUP_EMAIL.md');
-}
-
 admin.initializeApp();
 
 // ═══════════════════════════════════════════════════════════
@@ -619,23 +609,19 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
 
     console.log(`📝 Novo post do Alano: ${post.title}`);
 
-    // ═══════════════════════════════════════════════════════════
-    // PROTEÇÃO ANTI-DUPLICAÇÃO COM TRANSAÇÃO ATÔMICA
-    // ═══════════════════════════════════════════════════════════
+    // Proteção anti-duplicação com transação atômica
     const alreadyProcessed = await admin.firestore().runTransaction(async (transaction) => {
       const postDoc = await transaction.get(postRef);
       const postData = postDoc.data();
 
-      // Verificar AMBOS os campos (compatibilidade com posts antigos)
       if (postData.notificationsProcessed === true || postData.notificationSent === true) {
-        console.log('⚠️ Notificações já foram processadas para este post, ignorando');
+        console.log('⚠️ Notificações já processadas, ignorando');
         return true;
       }
 
-      // Marcar como processado ATOMICAMENTE (evita race condition)
       transaction.update(postRef, {
         notificationsProcessed: true,
-        notificationSent: true, // Compatibilidade com script antigo
+        notificationSent: true,
         notificationsProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
@@ -646,11 +632,29 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       return null;
     }
 
-    console.log('✅ Post marcado como processado (transação atômica)');
+    console.log('✅ Post marcado como processado');
 
     // ═══════════════════════════════════════════════════════════
-    // BUSCAR USUÁRIOS APROVADOS
+    // CRIAR 1 NOTIFICAÇÃO GLOBAL COMPARTILHADA (Em vez de 360)
     // ═══════════════════════════════════════════════════════════
+
+    await admin.firestore().collection('global_notifications').doc(postId).set({
+      type: 'alano_post',
+      title: '📝 Novo Post do Alano',
+      content: post.title,
+      postId: postId,
+      imageUrl: post.imageUrl || null,
+      videoUrl: post.videoUrl || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      relatedCollection: 'alano_posts',
+    });
+
+    console.log('✅ 1 notificação global criada (compartilhada por todos)');
+
+    // ═══════════════════════════════════════════════════════════
+    // ENVIAR PUSH NOTIFICATIONS (Igual antes)
+    // ═══════════════════════════════════════════════════════════
+
     const usersSnapshot = await admin.firestore()
       .collection('users')
       .where('approved', '==', true)
@@ -661,87 +665,47 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       return null;
     }
 
-    const notificationBatch = admin.firestore().batch();
-    const tokens = new Set(); // Usar Set para eliminar duplicatas automaticamente
-
+    const tokens = new Set();
     usersSnapshot.forEach((userDoc) => {
       const userData = userDoc.data();
-
-      // Criar notificação in-app
-      const notificationRef = admin.firestore()
-        .collection('notifications')
-        .doc();
-
-      notificationBatch.set(notificationRef, {
-        userId: userDoc.id,
-        type: 'post',
-        title: '📝 Novo Post do Alano',
-        content: post.title,
-        read: false,
-        relatedId: postId,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      // Coletar tokens FCM únicos
       if (userData.fcmToken && userData.notificationsEnabled) {
-        tokens.add(userData.fcmToken); // Set elimina duplicatas automaticamente
+        tokens.add(userData.fcmToken);
       }
     });
 
-    await notificationBatch.commit();
-    console.log(`✅ ${usersSnapshot.size} notificações in-app criadas`);
-
-    // ═══════════════════════════════════════════════════════════
-    // ENVIAR PUSH NOTIFICATIONS (FCM)
-    // ═══════════════════════════════════════════════════════════
-    const uniqueTokens = Array.from(tokens); // Converter Set para Array
+    const uniqueTokens = Array.from(tokens);
 
     if (uniqueTokens.length > 0) {
-      console.log(`📱 Enviando push para ${uniqueTokens.length} dispositivos únicos`);
+      console.log(`📱 Enviando push para ${uniqueTokens.length} dispositivos`);
 
-      const message = {
-        // ❌ REMOVIDO: notification (causava notificação duplicada no PWA)
-        // Agora enviamos apenas dados (data-only message)
-        // O Service Worker (firebase-messaging-sw.js) intercepta e mostra UMA notificação
+      const response = await admin.messaging().sendEachForMulticast({
+        tokens: uniqueTokens,
         data: {
           type: 'alano_post',
           postId: postId,
           title: post.title,
-          body: post.title, // Usado pelo Service Worker
-          notificationTitle: '📝 Novo Post do Alano', // Usado pelo Service Worker
+          body: post.title,
+          notificationTitle: '📝 Novo Post do Alano',
         },
-        android: {
-          priority: 'high',
-        },
+        android: { priority: 'high' },
         apns: {
           payload: {
             aps: {
-              'content-available': 1, // Wake up app in background
+              'content-available': 1,
               'thread-id': postId,
             },
           },
         },
-        webpush: {
-          headers: {
-            Urgency: 'high',
-          },
-        },
-      };
-
-      const response = await admin.messaging().sendEachForMulticast({
-        tokens: uniqueTokens,
-        ...message,
+        webpush: { headers: { Urgency: 'high' } },
       });
 
       console.log(`✅ Push: ${response.successCount} sucesso, ${response.failureCount} falhas`);
 
-      // Limpar tokens inválidos
       if (response.failureCount > 0) {
         const tokensToRemove = [];
         response.responses.forEach((resp, idx) => {
           if (!resp.success) {
             tokensToRemove.push(uniqueTokens[idx]);
-            console.log(`❌ Token inválido: ${uniqueTokens[idx].substring(0, 20)}...`);
           }
         });
 
@@ -752,15 +716,12 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
               .collection('users')
               .where('fcmToken', '==', token)
               .get();
-
             userQuery.forEach(doc => {
-              batch.update(doc.ref, {
-                fcmToken: admin.firestore.FieldValue.delete()
-              });
+              batch.update(doc.ref, { fcmToken: admin.firestore.FieldValue.delete() });
             });
           }
           await batch.commit();
-          console.log(`🧹 ${tokensToRemove.length} tokens removidos`);
+          console.log(`🧹 ${tokensToRemove.length} tokens inválidos removidos`);
         }
       }
     }
@@ -807,7 +768,6 @@ exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', as
     console.log(`✅ Encontrados ${usersSnapshot.size} usuário(s) no Firestore`);
 
     const notificationPromises = [];
-    const firestoreNotificationPromises = [];
     let successCount = 0;
     let errorCount = 0;
 
@@ -821,35 +781,17 @@ exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', as
         return;
       }
 
-      const truncatedText = messageText.length > 100
-        ? `${messageText.substring(0, 100)}...`
-        : messageText;
-
-      // Criar notificação no Firestore
-      const firestoreNotificationPromise = admin.firestore().collection('notifications').add({
-        userId: userId,
-        type: 'mention',
-        title: `${senderName} mencionou você`,
-        content: truncatedText,
-        read: false,
-        relatedId: messageId,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      }).then(() => {
-        console.log(`✅ Notificação Firestore criada para ${userId}`);
-      }).catch((error) => {
-        console.error(`❌ Erro ao criar notificação Firestore para ${userId}:`, error);
-      });
-
-      firestoreNotificationPromises.push(firestoreNotificationPromise);
-
-      // Enviar Push Notification
       if (!fcmToken) {
-        console.log(`⚠️ Usuário ${userId} não tem FCM token registrado - pulando push notification`);
+        console.log(`⚠️ Usuário ${userId} não tem FCM token registrado`);
         errorCount++;
         return;
       }
 
-      console.log(`📤 Preparando notificação push para ${userId} (${userData.displayName || 'sem nome'})`);
+      console.log(`📤 Preparando notificação para ${userId} (${userData.displayName || 'sem nome'})`);
+
+      const truncatedText = messageText.length > 100
+        ? `${messageText.substring(0, 100)}...`
+        : messageText;
 
       const notification = {
         token: fcmToken,
@@ -889,12 +831,12 @@ exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', as
 
       const promise = admin.messaging().send(notification)
         .then((response) => {
-          console.log(`✅ Notificação push enviada com sucesso para ${userId}: ${response}`);
+          console.log(`✅ Notificação enviada com sucesso para ${userId}: ${response}`);
           successCount++;
           return response;
         })
         .catch((error) => {
-          console.error(`❌ Erro ao enviar notificação push para ${userId}:`, error);
+          console.error(`❌ Erro ao enviar notificação para ${userId}:`, error);
 
           if (error.code === 'messaging/invalid-registration-token' ||
               error.code === 'messaging/registration-token-not-registered') {
@@ -912,10 +854,9 @@ exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', as
       notificationPromises.push(promise);
     });
 
-    // Aguardar todas as notificações (Firestore e Push)
-    await Promise.all([...notificationPromises, ...firestoreNotificationPromises]);
+    await Promise.all(notificationPromises);
 
-    console.log(`✅ Processamento concluído: ${successCount} push enviadas, ${errorCount} erros`);
+    console.log(`✅ Processamento concluído: ${successCount} enviadas, ${errorCount} erros`);
 
     return null;
 
@@ -1440,44 +1381,25 @@ exports.updateMarketsCache = onSchedule({
     });
     console.log(`✅ Forex: ${forexData.length} pares salvos`);
 
-    // ═══════════════════════════════════════════════════════════
-    // CALENDÁRIO ECONÔMICO - Trading Economics
-    // ═══════════════════════════════════════════════════════════
-    // SETUP:
-    // 1. Cliente compra API: tradingeconomics.com/api/pricing
-    // 2. Recebe credenciais (formato: usuario:senha)
-    // 3. Adicionar em .env: TRADING_ECONOMICS_KEY=usuario:senha
-    // 4. Deploy: firebase deploy --only functions:updateMarketsCache
-    //
-    // PLANO RECOMENDADO: Basic ($49/mês)
-    // - 100.000 requests/mês
-    // - Dados de 196 países
-    // - Histórico de 20 anos
-    // ═══════════════════════════════════════════════════════════
-
-    console.log('📅 Buscando Calendário Econômico...');
-
-    const tradingEconomicsKey = process.env.TRADING_ECONOMICS_KEY || 'guest:guest';
-
-    // Validar se ainda está usando credenciais gratuitas
-    if (tradingEconomicsKey === 'guest:guest') {
-      console.warn('⚠️ Usando credenciais gratuitas do Trading Economics');
-      console.warn('⚠️ Limitado a 3 requests/dia');
-      console.warn('⚠️ Para uso em produção, comprar API em: tradingeconomics.com/api/pricing');
-    }
-
+    // ═══ 4. CALENDÁRIO ECONÔMICO (Trading Economics - 5 dias) ═══
+    // NOTA: Para dados completos, considerar plano pago (~$50/mês)
+    // Finnhub Economic Calendar: $50/mês | Trading Economics: ~$49/mês
+    console.log('📅 Buscando dados do Calendário Econômico...');
     try {
+      // Calcular datas: 2 dias antes até 3 dias depois
       const today = new Date();
       const startDate = new Date(today);
       startDate.setDate(today.getDate() - 2);
       const endDate = new Date(today);
       endDate.setDate(today.getDate() + 3);
 
-      const formatDate = (date) => date.toISOString().split('T')[0];
+      const formatDate = (date) => {
+        return date.toISOString().split('T')[0];
+      };
 
       const calendarResponse = await axios.get('https://api.tradingeconomics.com/calendar', {
         params: {
-          c: tradingEconomicsKey,  // ← USAR VARIÁVEL
+          c: 'guest:guest',
           f: 'json',
           d1: formatDate(startDate),
           d2: formatDate(endDate),
@@ -1511,24 +1433,15 @@ exports.updateMarketsCache = onSchedule({
         data: calendarData,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         source: 'tradingeconomics',
-        apiMode: tradingEconomicsKey === 'guest:guest' ? 'FREE' : 'PAID',
         dateRange: {
           start: formatDate(startDate),
           end: formatDate(endDate),
         },
       });
-
       console.log(`✅ Calendário: ${calendarData.length} eventos salvos`);
-      console.log(`📊 Modo API: ${tradingEconomicsKey === 'guest:guest' ? 'GRATUITO' : 'PAGO'}`);
-
     } catch (calError) {
       console.error('⚠️ Erro no calendário econômico:', calError.message);
-
-      // Se for erro de limite de requests
-      if (calError.response?.status === 429 || calError.message.includes('limit')) {
-        console.error('🚫 LIMITE DE REQUESTS ATINGIDO');
-        console.error('💡 Solução: Comprar API paga em tradingeconomics.com/api/pricing');
-      }
+      // Não falha a função inteira se o calendário falhar
     }
 
     // ═══ 5. NOTÍCIAS (NewsAPI ou similar) ═══
@@ -1748,12 +1661,6 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
 
     // ═══ 4. CALENDÁRIO ECONÔMICO (Trading Economics) ═══
     let calendarCount = 0;
-    const tradingEconomicsKey = process.env.TRADING_ECONOMICS_KEY || 'guest:guest';
-
-    if (tradingEconomicsKey === 'guest:guest') {
-      console.warn('⚠️ Trading Economics em modo FREE - Considere upgrade para produção');
-    }
-
     try {
       const today = new Date();
       const startDate = new Date(today);
@@ -1765,7 +1672,7 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
 
       const calendarResponse = await axios.get('https://api.tradingeconomics.com/calendar', {
         params: {
-          c: tradingEconomicsKey,  // ← USAR VARIÁVEL
+          c: 'guest:guest',
           f: 'json',
           d1: formatDate(startDate),
           d2: formatDate(endDate),
@@ -1799,16 +1706,11 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
         data: calendarData,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         source: 'tradingeconomics',
-        apiMode: tradingEconomicsKey === 'guest:guest' ? 'FREE' : 'PAID',
         dateRange: { start: formatDate(startDate), end: formatDate(endDate) },
       });
       calendarCount = calendarData.length;
     } catch (calError) {
       console.error('⚠️ Erro no calendário:', calError.message);
-
-      if (calError.response?.status === 429 || calError.message.includes('limit')) {
-        console.error('🚫 LIMITE DE REQUESTS - Upgrade para API paga necessário');
-      }
     }
 
     // ═══ 5. NOTÍCIAS ═══
@@ -2123,79 +2025,6 @@ exports.getStocksData = onRequest({cors: true}, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// FUNÇÃO DE MANUTENÇÃO - Corrigir posts antigos
-// ═══════════════════════════════════════════════════════════
-
-/**
- * fixOldPosts
- * Corrige posts antigos que não têm o campo notificationSent
- * Chame esta URL uma vez para corrigir todos os posts existentes
- */
-exports.fixOldPosts = onRequest({cors: true}, async (req, res) => {
-  try {
-    console.log('🔧 [fixOldPosts] Iniciando correção de posts antigos...');
-
-    const postsSnapshot = await admin.firestore()
-      .collection('alano_posts')
-      .get();
-
-    console.log(`📊 Total de posts encontrados: ${postsSnapshot.size}`);
-
-    let updatedCount = 0;
-    let alreadyOkCount = 0;
-
-    const batch = admin.firestore().batch();
-    const updates = [];
-
-    postsSnapshot.forEach((doc) => {
-      const post = doc.data();
-
-      // Se o post não tem o campo notificationSent, adicionar como true
-      if (post.notificationSent === undefined || post.notificationSent === null) {
-        console.log(`✅ Atualizando post: ${doc.id} - "${post.title}"`);
-        batch.update(doc.ref, {
-          notificationSent: true,
-          notificationSentAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        updates.push({
-          id: doc.id,
-          title: post.title,
-        });
-        updatedCount++;
-      } else {
-        alreadyOkCount++;
-      }
-    });
-
-    // Commit do batch
-    if (updatedCount > 0) {
-      await batch.commit();
-      console.log(`✅ ${updatedCount} posts atualizados com sucesso!`);
-    } else {
-      console.log('✅ Nenhum post precisou ser atualizado!');
-    }
-
-    console.log(`✅ ${alreadyOkCount} posts já estavam OK`);
-
-    return res.status(200).json({
-      success: true,
-      message: 'Posts antigos corrigidos com sucesso',
-      totalPosts: postsSnapshot.size,
-      updated: updatedCount,
-      alreadyOk: alreadyOkCount,
-      updatedPosts: updates,
-    });
-  } catch (error) {
-    console.error('❌ [fixOldPosts] Erro:', error.message);
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-      details: 'Erro ao corrigir posts antigos',
-    });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════
 // FUNÇÕES DE API DE FOREX
 // ═══════════════════════════════════════════════════════════
 
@@ -2248,56 +2077,4 @@ exports.getForexData = onRequest({cors: true}, async (req, res) => {
       details: 'Erro ao buscar dados de Forex',
     });
   }
-});
-
-// ═══════════════════════════════════════════════════════════
-// ENDPOINT DE STATUS - Verificar configuração das APIs
-// ═══════════════════════════════════════════════════════════
-
-exports.checkApiStatus = onRequest({cors: true}, async (req, res) => {
-  const status = {
-    tradingEconomics: {
-      configured: process.env.TRADING_ECONOMICS_KEY !== 'guest:guest',
-      mode: process.env.TRADING_ECONOMICS_KEY === 'guest:guest' ?
-        'FREE (3 requests/dia)' :
-        'PAID (100k requests/mês)',
-      key: process.env.TRADING_ECONOMICS_KEY ?
-        process.env.TRADING_ECONOMICS_KEY.substring(0, 8) + '...' :
-        'NÃO CONFIGURADA',
-    },
-    resend: {
-      configured: !!process.env.RESEND_API_KEY &&
-        process.env.RESEND_API_KEY !== 'SUA_CHAVE_API_RESEND_AQUI',
-      emailFrom: process.env.EMAIL_FROM || 'NÃO CONFIGURADO',
-      isProfessional: process.env.EMAIL_FROM !== 'onboarding@resend.dev' &&
-        process.env.EMAIL_FROM !== 'NÃO CONFIGURADO',
-    },
-    cache: {},
-  };
-
-  try {
-    const calendarDoc = await admin.firestore()
-      .collection('market_cache')
-      .doc('economic_calendar')
-      .get();
-
-    if (calendarDoc.exists) {
-      const data = calendarDoc.data();
-      status.cache.economicCalendar = {
-        lastUpdate: data.updatedAt?.toDate().toISOString(),
-        eventsCount: data.data?.length || 0,
-        dateRange: data.dateRange,
-        apiMode: data.apiMode || 'UNKNOWN',
-      };
-    } else {
-      status.cache.economicCalendar = {
-        status: 'NOT_FOUND',
-        message: 'Cache ainda não foi criado. Aguarde a função updateMarketsCache rodar.',
-      };
-    }
-  } catch (error) {
-    status.cache.error = error.message;
-  }
-
-  return res.status(200).json(status);
 });
