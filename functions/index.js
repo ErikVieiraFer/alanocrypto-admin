@@ -602,255 +602,136 @@ exports.onSignalCreated = onDocumentCreated('signals/{signalId}', async (event) 
 
 // Enviar notificação quando novo post do Alano é criado
 exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (event) => {
-    try {
-      const post = event.data.data();
-      const postId = event.params.postId;
+  try {
+    const postId = event.params.postId;
+    const postRef = event.data.ref;
+    const post = event.data.data();
 
-      console.log('📝 Novo post do Alano:', post.title);
+    console.log(`📝 Novo post do Alano: ${post.title}`);
 
-      // Verificar se notificação já foi enviada
-      if (post.notificationSent === true) {
-        console.log('⚠️ Notificação já enviada para este post, pulando...');
-        return null;
+    // Proteção anti-duplicação com transação atômica
+    const alreadyProcessed = await admin.firestore().runTransaction(async (transaction) => {
+      const postDoc = await transaction.get(postRef);
+      const postData = postDoc.data();
+
+      if (postData.notificationsProcessed === true || postData.notificationSent === true) {
+        console.log('⚠️ Notificações já processadas, ignorando');
+        return true;
       }
 
-      // Buscar usuários
-      const usersSnapshot = await admin.firestore()
-        .collection('users')
-        .where('notificationsEnabled', '==', true)
-        .where('approved', '==', true)
-        .get();
-
-      if (usersSnapshot.empty) {
-        return null;
-      }
-
-      const tokens = [];
-      usersSnapshot.forEach(doc => {
-        const userData = doc.data();
-        if (userData.fcmToken) {
-          tokens.push(userData.fcmToken);
-        }
+      transaction.update(postRef, {
+        notificationsProcessed: true,
+        notificationSent: true,
+        notificationsProcessedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      if (tokens.length === 0) {
-        return null;
+      return false;
+    });
+
+    if (alreadyProcessed) {
+      return null;
+    }
+
+    console.log('✅ Post marcado como processado');
+
+    // ═══════════════════════════════════════════════════════════
+    // CRIAR 1 NOTIFICAÇÃO GLOBAL COMPARTILHADA (Em vez de 360)
+    // ═══════════════════════════════════════════════════════════
+
+    await admin.firestore().collection('global_notifications').doc(postId).set({
+      type: 'alano_post',
+      title: '📝 Novo Post do Alano',
+      content: post.title,
+      postId: postId,
+      imageUrl: post.imageUrl || null,
+      videoUrl: post.videoUrl || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      relatedCollection: 'alano_posts',
+    });
+
+    console.log('✅ 1 notificação global criada (compartilhada por todos)');
+
+    // ═══════════════════════════════════════════════════════════
+    // ENVIAR PUSH NOTIFICATIONS (Igual antes)
+    // ═══════════════════════════════════════════════════════════
+
+    const usersSnapshot = await admin.firestore()
+      .collection('users')
+      .where('approved', '==', true)
+      .get();
+
+    if (usersSnapshot.empty) {
+      console.log('⚠️ Nenhum usuário aprovado');
+      return null;
+    }
+
+    const tokens = new Set();
+    usersSnapshot.forEach((userDoc) => {
+      const userData = userDoc.data();
+      if (userData.fcmToken && userData.notificationsEnabled) {
+        tokens.add(userData.fcmToken);
       }
+    });
 
-      console.log(`📱 Enviando para ${tokens.length} usuários`);
+    const uniqueTokens = Array.from(tokens);
 
-      const message = {
-        notification: {
-          title: '📝 Novo Post do Alano!',
-          body: post.title,
-        },
-        data: {
-          type: 'post',
-          postId: event.params.postId,
-          title: post.title,
-        },
-      };
+    if (uniqueTokens.length > 0) {
+      console.log(`📱 Enviando push para ${uniqueTokens.length} dispositivos`);
 
       const response = await admin.messaging().sendEachForMulticast({
-        tokens: tokens,
-        ...message,
+        tokens: uniqueTokens,
+        data: {
+          type: 'alano_post',
+          postId: postId,
+          title: post.title,
+          body: post.title,
+          notificationTitle: '📝 Novo Post do Alano',
+        },
+        android: { priority: 'high' },
+        apns: {
+          payload: {
+            aps: {
+              'content-available': 1,
+              'thread-id': postId,
+            },
+          },
+        },
+        webpush: { headers: { Urgency: 'high' } },
       });
 
-      console.log(`✅ Enviado: ${response.successCount} sucesso, ${response.failureCount} falhas`);
+      console.log(`✅ Push: ${response.successCount} sucesso, ${response.failureCount} falhas`);
 
-      // Marcar notificação como enviada
-      await event.data.ref.update({
-        notificationSent: true,
-        notificationSentAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      console.log('✅ Post marcado com notificationSent=true');
-
-      // ═══════════════════════════════════════════════════════════
-      // ENVIAR EMAILS PARA USUÁRIOS COM EMAIL NOTIFICATIONS ATIVO
-      // ═══════════════════════════════════════════════════════════
-
-      // Buscar usuários com notificações de email ativas
-      const emailUsersSnapshot = await admin.firestore()
-        .collection('users')
-        .where('emailNotifications', '==', true)
-        .where('approved', '==', true)
-        .get();
-
-      if (!emailUsersSnapshot.empty) {
-        const emails = [];
-        emailUsersSnapshot.forEach(doc => {
-          const userData = doc.data();
-          if (userData.email) {
-            emails.push(userData.email);
+      if (response.failureCount > 0) {
+        const tokensToRemove = [];
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success) {
+            tokensToRemove.push(uniqueTokens[idx]);
           }
         });
 
-        if (emails.length > 0) {
-          console.log(`📧 Enviando emails para ${emails.length} usuários`);
-
-          // Template HTML do email
-          const emailHtml = `
-            <!DOCTYPE html>
-            <html>
-              <head>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <style>
-                  body {
-                    margin: 0;
-                    padding: 0;
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-                    background-color: #0a0a0a;
-                    color: #ffffff;
-                  }
-                  .container {
-                    max-width: 600px;
-                    margin: 0 auto;
-                    background-color: #1a1a1a;
-                  }
-                  .header {
-                    background: linear-gradient(135deg, #00ff01 0%, #00cc01 100%);
-                    padding: 40px 20px;
-                    text-align: center;
-                  }
-                  .header h1 {
-                    margin: 0;
-                    color: #0a0a0a;
-                    font-size: 28px;
-                    font-weight: bold;
-                  }
-                  .content {
-                    padding: 30px 20px;
-                  }
-                  .post-title {
-                    color: #00ff01;
-                    font-size: 24px;
-                    font-weight: bold;
-                    margin: 20px 0;
-                  }
-                  .post-content {
-                    background-color: #0a0a0a;
-                    border-left: 4px solid #00ff01;
-                    padding: 20px;
-                    margin: 20px 0;
-                    line-height: 1.6;
-                    color: #cccccc;
-                    white-space: pre-wrap;
-                  }
-                  .video-section {
-                    background-color: #2a2a2a;
-                    border-radius: 8px;
-                    padding: 20px;
-                    margin: 20px 0;
-                    text-align: center;
-                  }
-                  .video-link {
-                    display: inline-block;
-                    background: linear-gradient(135deg, #ff0000 0%, #cc0000 100%);
-                    color: #ffffff;
-                    padding: 14px 32px;
-                    text-decoration: none;
-                    border-radius: 8px;
-                    font-weight: bold;
-                    margin-top: 10px;
-                    transition: transform 0.2s;
-                  }
-                  .video-link:hover {
-                    transform: translateY(-2px);
-                  }
-                  .button {
-                    display: inline-block;
-                    background: linear-gradient(135deg, #00ff01 0%, #00cc01 100%);
-                    color: #0a0a0a;
-                    padding: 14px 32px;
-                    text-decoration: none;
-                    border-radius: 8px;
-                    font-weight: bold;
-                    margin: 20px 0;
-                    transition: transform 0.2s;
-                  }
-                  .button:hover {
-                    transform: translateY(-2px);
-                  }
-                  .footer {
-                    padding: 20px;
-                    text-align: center;
-                    color: #666666;
-                    font-size: 12px;
-                    border-top: 1px solid #333333;
-                  }
-                  .footer a {
-                    color: #00ff01;
-                    text-decoration: none;
-                  }
-                </style>
-              </head>
-              <body>
-                <div class="container">
-                  <div class="header">
-                    <h1>📝 AlanoCryptoFX</h1>
-                  </div>
-                  <div class="content">
-                    <h2 style="color: #00ff01; margin-top: 0;">Novo Post do Alano!</h2>
-
-                    <div class="post-title">
-                      ${post.title}
-                    </div>
-
-                    ${post.content ? `
-                    <div class="post-content">
-                      ${post.content}
-                    </div>
-                    ` : ''}
-
-                    ${post.videoUrl ? `
-                    <div class="video-section">
-                      <div style="color: #cccccc; margin-bottom: 10px;">
-                        🎥 Este post contém um vídeo
-                      </div>
-                      <a href="${post.videoUrl}" class="video-link" target="_blank">Assistir Vídeo</a>
-                    </div>
-                    ` : ''}
-
-                    <div style="text-align: center;">
-                      <a href="https://alanocryptofx-v2.web.app" class="button">Ver no App</a>
-                    </div>
-                  </div>
-                  <div class="footer">
-                    <p>© ${new Date().getFullYear()} AlanoCryptoFX. Todos os direitos reservados.</p>
-                    <p><a href="https://alanocryptofx-v2.web.app/settings">Desativar notificações por email</a></p>
-                  </div>
-                </div>
-              </body>
-            </html>
-          `;
-
-          // Enviar emails (um por vez para evitar rate limiting)
-          let emailsSent = 0;
-          for (const email of emails) {
-            try {
-              await resend.emails.send({
-                from: EMAIL_FROM,
-                to: email,
-                subject: `📝 ${post.title} - AlanoCryptoFX`,
-                html: emailHtml,
-              });
-              emailsSent++;
-            } catch (emailError) {
-              console.error(`❌ Erro ao enviar email para ${email}:`, emailError);
-            }
+        if (tokensToRemove.length > 0) {
+          const batch = admin.firestore().batch();
+          for (const token of tokensToRemove) {
+            const userQuery = await admin.firestore()
+              .collection('users')
+              .where('fcmToken', '==', token)
+              .get();
+            userQuery.forEach(doc => {
+              batch.update(doc.ref, { fcmToken: admin.firestore.FieldValue.delete() });
+            });
           }
-
-          console.log(`✅ ${emailsSent} emails enviados com sucesso`);
+          await batch.commit();
+          console.log(`🧹 ${tokensToRemove.length} tokens inválidos removidos`);
         }
       }
-
-      return null;
-    } catch (error) {
-      console.error('❌ Erro ao enviar notificações:', error);
-      return null;
     }
-  });
+
+    return null;
+  } catch (error) {
+    console.error('❌ Erro:', error);
+    return null;
+  }
+});
 
 // Enviar notificação quando usuário é mencionado no chat
 exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', async (event) => {
