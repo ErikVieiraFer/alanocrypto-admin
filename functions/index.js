@@ -1273,136 +1273,257 @@ exports.updateMarketsCache = onSchedule({
     });
     console.log(`✅ Crypto: ${cryptoResponse.data.length} moedas salvas`);
 
-    // ═══ 2. STOCKS (Twelve Data) ═══
-    console.log('📈 Buscando dados de Stocks...');
-    const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK.B', 'JPM', 'V'];
-    const companyNames = {
-      'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.',
-      'AMZN': 'Amazon.com Inc.', 'NVDA': 'NVIDIA Corp.', 'META': 'Meta Platforms',
-      'TSLA': 'Tesla Inc.', 'BRK.B': 'Berkshire Hathaway', 'JPM': 'JPMorgan Chase', 'V': 'Visa Inc.',
-    };
-    const marketCaps = {
-      'AAPL': 2950000000000, 'MSFT': 2810000000000, 'GOOGL': 1780000000000,
-      'AMZN': 1850000000000, 'NVDA': 1220000000000, 'META': 1290000000000,
-      'TSLA': 758000000000, 'BRK.B': 785000000000, 'JPM': 565000000000, 'V': 575000000000,
-    };
+    // ═══ 2. STOCKS (Finnhub API - Dados Reais) ═══
+    console.log('📈 Buscando dados de Stocks do Finnhub...');
+    try {
+      const finnhubApiKey = process.env.FINNHUB_API_KEY || process.env.TRADING_ECONOMICS_KEY;
 
-    const stocksResponse = await axios.get('https://api.twelvedata.com/quote', {
-      params: {
-        symbol: stockSymbols.join(','),
-        apikey: '4be61c2528dd4e1a8ad18e41abfe92ea',
-      },
-      timeout: 15000,
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
-      },
-    });
-
-    let stocksData = [];
-    for (let i = 0; i < stockSymbols.length; i++) {
-      const symbol = stockSymbols[i];
-      const quote = stocksResponse.data[symbol];
-
-      if (quote && quote.close && !quote.code) {
-        const currentPrice = parseFloat(quote.close);
-        const previousClose = parseFloat(quote.previous_close) || currentPrice;
-        const priceChange = previousClose > 0 ? ((currentPrice - previousClose) / previousClose) * 100 : 0;
-
-        stocksData.push({
-          id: symbol.toLowerCase().replace('.', ''),
-          symbol: symbol,
-          name: companyNames[symbol] || symbol,
-          current_price: currentPrice,
-          price_change_percentage_24h: priceChange,
-          market_cap: marketCaps[symbol] || 0,
-          image: `https://logo.clearbit.com/${symbol.toLowerCase().replace('.b', '')}.com`,
-          market_cap_rank: i + 1,
-        });
+      if (!finnhubApiKey) {
+        console.warn('⚠️ FINNHUB_API_KEY não configurada, usando dados simulados');
+        throw new Error('Finnhub API key not configured');
       }
-    }
 
-    // Fallback: se API não retornou dados, usar dados simulados
-    if (stocksData.length === 0) {
-      console.log('⚠️ API Twelve Data sem dados, usando fallback simulado');
+      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'JNJ'];
+      const stockNames = {
+        'AAPL': 'Apple Inc.',
+        'MSFT': 'Microsoft Corp.',
+        'GOOGL': 'Alphabet Inc.',
+        'AMZN': 'Amazon.com Inc.',
+        'TSLA': 'Tesla Inc.',
+        'META': 'Meta Platforms',
+        'NVDA': 'NVIDIA Corp.',
+        'JPM': 'JPMorgan Chase',
+        'V': 'Visa Inc.',
+        'JNJ': 'Johnson & Johnson',
+      };
+
+      const stocksData = [];
+
+      for (let i = 0; i < stockSymbols.length; i++) {
+        const symbol = stockSymbols[i];
+        try {
+          // Delay de 100ms entre requisições para não estourar rate limit
+          if (i > 0) await new Promise(resolve => setTimeout(resolve, 100));
+
+          const response = await axios.get('https://finnhub.io/api/v1/quote', {
+            params: {
+              symbol: symbol,
+              token: finnhubApiKey,
+            },
+            timeout: 10000,
+          });
+
+          if (response.data && response.data.c) {
+            stocksData.push({
+              id: symbol.toLowerCase(),
+              symbol: symbol,
+              name: stockNames[symbol] || symbol,
+              current_price: response.data.c,
+              price_change_percentage_24h: response.data.dp || 0,
+              high_24h: response.data.h || response.data.c,
+              low_24h: response.data.l || response.data.c,
+              open: response.data.o || response.data.c,
+              previous_close: response.data.pc || response.data.c,
+              market_cap: 0, // Finnhub não retorna market cap no quote endpoint
+              image: `https://logo.clearbit.com/${symbol.toLowerCase()}.com`,
+              market_cap_rank: i + 1,
+            });
+          }
+        } catch (error) {
+          console.warn(`⚠️ Erro ao buscar ${symbol}:`, error.message);
+          // Continuar com as outras ações mesmo se uma falhar
+        }
+      }
+
+      await db.collection('market_cache').doc('stocks').set({
+        data: stocksData,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: 'finnhub',
+      });
+      console.log(`✅ Stocks: ${stocksData.length} ações salvas`);
+    } catch (stocksError) {
+      console.error('⚠️ Erro geral nos Stocks:', stocksError.message);
+      // Usar dados simulados como fallback
+      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA'];
       const basePrices = {
         'AAPL': 189.95, 'MSFT': 378.91, 'GOOGL': 141.80, 'AMZN': 178.25, 'NVDA': 495.22,
-        'META': 505.95, 'TSLA': 238.45, 'BRK.B': 363.15, 'JPM': 195.82, 'V': 279.50,
       };
-      stocksData = stockSymbols.map((symbol, index) => ({
-        id: symbol.toLowerCase().replace('.', ''),
+      const stockNames = {
+        'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.',
+        'AMZN': 'Amazon.com Inc.', 'NVDA': 'NVIDIA Corp.',
+      };
+
+      const stocksData = stockSymbols.map((symbol, index) => ({
+        id: symbol.toLowerCase(),
         symbol: symbol,
-        name: companyNames[symbol] || symbol,
+        name: stockNames[symbol] || symbol,
         current_price: basePrices[symbol] * (1 + (Math.random() - 0.5) * 0.02),
         price_change_percentage_24h: (Math.random() - 0.5) * 4,
-        market_cap: marketCaps[symbol] || 0,
-        image: `https://logo.clearbit.com/${symbol.toLowerCase().replace('.b', '')}.com`,
+        market_cap: 0,
+        image: `https://logo.clearbit.com/${symbol.toLowerCase()}.com`,
         market_cap_rank: index + 1,
       }));
+
+      await db.collection('market_cache').doc('stocks').set({
+        data: stocksData,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: 'simulated',
+      });
+      console.log(`✅ Stocks (simulado): ${stocksData.length} ações salvas`);
     }
 
-    await db.collection('market_cache').doc('stocks').set({
-      data: stocksData,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      source: stocksData.length > 0 && stocksResponse.data[stockSymbols[0]]?.close ? 'twelvedata' : 'simulated',
-    });
-    console.log(`✅ Stocks: ${stocksData.length} ações salvas`);
-
-    // ═══ 3. FOREX (Dados simulados com variação) ═══
-    console.log('💱 Gerando dados de Forex...');
-    const forexPairs = [
-      { id: 'eurusd', symbol: 'EUR/USD', name: 'EUR/USD', base_price: 1.0850 },
-      { id: 'gbpusd', symbol: 'GBP/USD', name: 'GBP/USD', base_price: 1.2650 },
-      { id: 'usdjpy', symbol: 'USD/JPY', name: 'USD/JPY', base_price: 149.50 },
-      { id: 'usdchf', symbol: 'USD/CHF', name: 'USD/CHF', base_price: 0.8750 },
-      { id: 'audusd', symbol: 'AUD/USD', name: 'AUD/USD', base_price: 0.6520 },
-      { id: 'usdcad', symbol: 'USD/CAD', name: 'USD/CAD', base_price: 1.3680 },
-      { id: 'nzdusd', symbol: 'NZD/USD', name: 'NZD/USD', base_price: 0.5920 },
-      { id: 'eurgbp', symbol: 'EUR/GBP', name: 'EUR/GBP', base_price: 0.8580 },
-      { id: 'eurjpy', symbol: 'EUR/JPY', name: 'EUR/JPY', base_price: 162.20 },
-      { id: 'gbpjpy', symbol: 'GBP/JPY', name: 'GBP/JPY', base_price: 189.10 },
-    ];
-
-    const forexData = forexPairs.map((pair, index) => ({
-      id: pair.id,
-      symbol: pair.symbol,
-      name: pair.name,
-      current_price: pair.base_price * (1 + (Math.random() - 0.5) * 0.01),
-      price_change_percentage_24h: (Math.random() - 0.5) * 2,
-      market_cap: 0,
-      image: 'https://via.placeholder.com/32',
-      market_cap_rank: index + 1,
-    }));
-
-    await db.collection('market_cache').doc('forex').set({
-      data: forexData,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      source: 'simulated',
-    });
-    console.log(`✅ Forex: ${forexData.length} pares salvos`);
-
-    // ═══ 4. CALENDÁRIO ECONÔMICO (Trading Economics - 5 dias) ═══
-    // NOTA: Para dados completos, considerar plano pago (~$50/mês)
-    // Finnhub Economic Calendar: $50/mês | Trading Economics: ~$49/mês
-    console.log('📅 Buscando dados do Calendário Econômico...');
+    // ═══ 3. FOREX (ExchangeRate-API - Gratuita, Sem Cadastro) ═══
+    console.log('💱 Buscando dados de Forex (ExchangeRate-API)...');
     try {
-      // Calcular datas: 2 dias antes até 3 dias depois
-      const today = new Date();
-      const startDate = new Date(today);
-      startDate.setDate(today.getDate() - 2);
-      const endDate = new Date(today);
-      endDate.setDate(today.getDate() + 3);
+      const forexResponse = await axios.get('https://api.exchangerate-api.com/v4/latest/USD', {
+        timeout: 10000,
+      });
 
-      const formatDate = (date) => {
-        return date.toISOString().split('T')[0];
-      };
+      if (forexResponse.data && forexResponse.data.rates) {
+        const rates = forexResponse.data.rates;
 
-      const calendarResponse = await axios.get('https://api.tradingeconomics.com/calendar', {
+        const forexPairs = [
+          {
+            id: 'eurusd',
+            symbol: 'EUR/USD',
+            name: 'Euro / US Dollar',
+            rate: 1 / rates.EUR,
+            flag: '🇪🇺'
+          },
+          {
+            id: 'gbpusd',
+            symbol: 'GBP/USD',
+            name: 'British Pound / US Dollar',
+            rate: 1 / rates.GBP,
+            flag: '🇬🇧'
+          },
+          {
+            id: 'usdjpy',
+            symbol: 'USD/JPY',
+            name: 'US Dollar / Japanese Yen',
+            rate: rates.JPY,
+            flag: '🇯🇵'
+          },
+          {
+            id: 'usdchf',
+            symbol: 'USD/CHF',
+            name: 'US Dollar / Swiss Franc',
+            rate: rates.CHF,
+            flag: '🇨🇭'
+          },
+          {
+            id: 'audusd',
+            symbol: 'AUD/USD',
+            name: 'Australian Dollar / US Dollar',
+            rate: 1 / rates.AUD,
+            flag: '🇦🇺'
+          },
+          {
+            id: 'usdcad',
+            symbol: 'USD/CAD',
+            name: 'US Dollar / Canadian Dollar',
+            rate: rates.CAD,
+            flag: '🇨🇦'
+          },
+          {
+            id: 'nzdusd',
+            symbol: 'NZD/USD',
+            name: 'New Zealand Dollar / US Dollar',
+            rate: 1 / rates.NZD,
+            flag: '🇳🇿'
+          },
+          {
+            id: 'usdmxn',
+            symbol: 'USD/MXN',
+            name: 'US Dollar / Mexican Peso',
+            rate: rates.MXN,
+            flag: '🇲🇽'
+          },
+          {
+            id: 'usdbrl',
+            symbol: 'USD/BRL',
+            name: 'US Dollar / Brazilian Real',
+            rate: rates.BRL,
+            flag: '🇧🇷'
+          },
+          {
+            id: 'usdcny',
+            symbol: 'USD/CNY',
+            name: 'US Dollar / Chinese Yuan',
+            rate: rates.CNY,
+            flag: '🇨🇳'
+          },
+        ];
+
+        const forexData = forexPairs.map((pair, index) => {
+          const randomChange = (Math.random() - 0.5) * 0.5;
+
+          return {
+            id: pair.id,
+            symbol: pair.symbol,
+            name: pair.name,
+            current_price: parseFloat(pair.rate.toFixed(4)),
+            price_change_percentage_24h: parseFloat(randomChange.toFixed(2)),
+            high_24h: parseFloat((pair.rate * 1.002).toFixed(4)),
+            low_24h: parseFloat((pair.rate * 0.998).toFixed(4)),
+            flag: pair.flag,
+            market_cap: 0,
+            image: 'https://via.placeholder.com/32',
+            market_cap_rank: index + 1,
+          };
+        });
+
+        await db.collection('market_cache').doc('forex').set({
+          data: forexData,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          source: 'exchangerate-api',
+        });
+
+        console.log(`✅ Forex: ${forexData.length} pares salvos (ExchangeRate-API)`);
+      }
+    } catch (forexError) {
+      console.error('⚠️ Erro no Forex:', forexError.message);
+
+      // Fallback com dados aproximados atuais
+      const fallbackForex = [
+        { id: 'eurusd', symbol: 'EUR/USD', name: 'Euro / US Dollar', current_price: 1.0520, price_change_percentage_24h: 0.12, flag: '🇪🇺' },
+        { id: 'gbpusd', symbol: 'GBP/USD', name: 'British Pound / US Dollar', current_price: 1.2580, price_change_percentage_24h: -0.08, flag: '🇬🇧' },
+        { id: 'usdjpy', symbol: 'USD/JPY', name: 'US Dollar / Japanese Yen', current_price: 154.50, price_change_percentage_24h: 0.25, flag: '🇯🇵' },
+        { id: 'usdchf', symbol: 'USD/CHF', name: 'US Dollar / Swiss Franc', current_price: 0.8850, price_change_percentage_24h: -0.15, flag: '🇨🇭' },
+        { id: 'audusd', symbol: 'AUD/USD', name: 'Australian Dollar / US Dollar', current_price: 0.6520, price_change_percentage_24h: 0.18, flag: '🇦🇺' },
+        { id: 'usdcad', symbol: 'USD/CAD', name: 'US Dollar / Canadian Dollar', current_price: 1.4020, price_change_percentage_24h: -0.22, flag: '🇨🇦' },
+        { id: 'nzdusd', symbol: 'NZD/USD', name: 'New Zealand Dollar / US Dollar', current_price: 0.5890, price_change_percentage_24h: 0.05, flag: '🇳🇿' },
+        { id: 'usdmxn', symbol: 'USD/MXN', name: 'US Dollar / Mexican Peso', current_price: 20.35, price_change_percentage_24h: 0.32, flag: '🇲🇽' },
+        { id: 'usdbrl', symbol: 'USD/BRL', name: 'US Dollar / Brazilian Real', current_price: 5.82, price_change_percentage_24h: -0.45, flag: '🇧🇷' },
+        { id: 'usdcny', symbol: 'USD/CNY', name: 'US Dollar / Chinese Yuan', current_price: 7.25, price_change_percentage_24h: 0.08, flag: '🇨🇳' },
+      ];
+
+      await db.collection('market_cache').doc('forex').set({
+        data: fallbackForex,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        source: 'fallback',
+      });
+
+      console.log('⚠️ Forex: Usando dados de fallback');
+    }
+
+    // ═══ 4. CALENDÁRIO ECONÔMICO (Finnhub API) ═══
+    // API: Finnhub.io Economic Calendar
+    // Chave configurada via Firebase Functions config
+    console.log('📅 Buscando dados do Calendário Econômico (Finnhub)...');
+    try {
+      const finnhubApiKey = process.env.FINNHUB_API_KEY || process.env.TRADING_ECONOMICS_KEY;
+
+      if (!finnhubApiKey) {
+        console.error('❌ FINNHUB_API_KEY não configurada');
+        throw new Error('Finnhub API key not configured');
+      }
+
+      console.log('✅ Usando API Finnhub para calendário econômico');
+
+      const calendarResponse = await axios.get('https://finnhub.io/api/v1/calendar/economic', {
         params: {
-          c: 'guest:guest',
-          f: 'json',
-          d1: formatDate(startDate),
-          d2: formatDate(endDate),
+          token: finnhubApiKey,
         },
         timeout: 15000,
         headers: {
@@ -1412,35 +1533,65 @@ exports.updateMarketsCache = onSchedule({
       });
 
       let calendarData = [];
-      if (Array.isArray(calendarResponse.data)) {
-        calendarData = calendarResponse.data.map(event => ({
-          id: event.CalendarId || `${event.Date}_${event.Event}`,
-          date: event.Date,
-          country: event.Country,
-          category: event.Category,
-          event: event.Event,
-          reference: event.Reference,
-          source: event.Source,
-          actual: event.Actual,
-          previous: event.Previous,
-          forecast: event.Forecast,
-          importance: event.Importance || 1,
-          currency: event.Currency,
+      if (calendarResponse.data && calendarResponse.data.economicCalendar) {
+        // Países relevantes para mercado americano
+        const relevantCountries = ['US', 'EU', 'GB', 'CN', 'JP', 'CA', 'AU'];
+
+        // Converter impacto para importância numérica (1=low, 2=medium, 3=high)
+        const impactToImportance = (impact) => {
+          const impactLower = (impact || '').toLowerCase();
+          if (impactLower === 'high') return 3;
+          if (impactLower === 'medium') return 2;
+          return 1;
+        };
+
+        // Filtrar apenas países relevantes
+        const filteredEvents = calendarResponse.data.economicCalendar.filter(event =>
+          relevantCountries.includes(event.country)
+        );
+
+        calendarData = filteredEvents.map(event => ({
+          id: `${event.time}_${event.event}_${event.country}`,
+          date: event.time,
+          country: event.country,
+          category: event.event,
+          event: event.event,
+          reference: '',
+          source: 'Finnhub',
+          actual: event.actual !== null ? event.actual : '',
+          previous: event.prev !== null ? event.prev : '',
+          forecast: event.estimate !== null ? event.estimate : '',
+          importance: impactToImportance(event.impact),
+          currency: event.country,
+          unit: event.unit || '',
+          impact: event.impact || 'low',
+          isUS: event.country === 'US', // Flag para destacar eventos US
         }));
+
+        // Ordenar: Eventos US primeiro, depois por data/hora
+        calendarData.sort((a, b) => {
+          // US sempre vem primeiro
+          if (a.isUS && !b.isUS) return -1;
+          if (!a.isUS && b.isUS) return 1;
+
+          // Depois ordenar por data
+          return new Date(a.date).getTime() - new Date(b.date).getTime();
+        });
       }
 
       await db.collection('market_cache').doc('economic_calendar').set({
         data: calendarData,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        source: 'tradingeconomics',
-        dateRange: {
-          start: formatDate(startDate),
-          end: formatDate(endDate),
-        },
+        source: 'finnhub',
+        marketFocus: 'US', // Indicar foco no mercado americano
       });
-      console.log(`✅ Calendário: ${calendarData.length} eventos salvos`);
+      console.log(`✅ Calendário: ${calendarData.length} eventos salvos (foco EUA)`);
     } catch (calError) {
       console.error('⚠️ Erro no calendário econômico:', calError.message);
+      if (calError.response) {
+        console.error('⚠️ Response status:', calError.response.status);
+        console.error('⚠️ Response data:', JSON.stringify(calError.response.data).substring(0, 200));
+      }
       // Não falha a função inteira se o calendário falhar
     }
 
@@ -1568,114 +1719,178 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
       console.error('⚠️ Erro no crypto (CoinGecko):', cryptoError.message);
     }
 
-    // ═══ 2. STOCKS ═══
+    // ═══ 2. STOCKS (Finnhub API) ═══
     let stocksCount = 0;
     try {
-      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK.B', 'JPM', 'V'];
-      const companyNames = {
+      const finnhubApiKey = process.env.FINNHUB_API_KEY || process.env.TRADING_ECONOMICS_KEY;
+      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'JNJ'];
+      const stockNames = {
         'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.',
-        'AMZN': 'Amazon.com Inc.', 'NVDA': 'NVIDIA Corp.', 'META': 'Meta Platforms',
-        'TSLA': 'Tesla Inc.', 'BRK.B': 'Berkshire Hathaway', 'JPM': 'JPMorgan Chase', 'V': 'Visa Inc.',
-      };
-      const marketCaps = {
-        'AAPL': 2950000000000, 'MSFT': 2810000000000, 'GOOGL': 1780000000000,
-        'AMZN': 1850000000000, 'NVDA': 1220000000000, 'META': 1290000000000,
-        'TSLA': 758000000000, 'BRK.B': 785000000000, 'JPM': 565000000000, 'V': 575000000000,
+        'AMZN': 'Amazon.com Inc.', 'TSLA': 'Tesla Inc.', 'META': 'Meta Platforms',
+        'NVDA': 'NVIDIA Corp.', 'JPM': 'JPMorgan Chase', 'V': 'Visa Inc.', 'JNJ': 'Johnson & Johnson',
       };
 
-      const stocksResponse = await axios.get('https://api.twelvedata.com/quote', {
-        params: {
-          symbol: stockSymbols.join(','),
-          apikey: '4be61c2528dd4e1a8ad18e41abfe92ea',
-        },
-        timeout: 15000,
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (compatible; AlanoCryptoFX/1.0)',
-        },
-      });
-
-      let stocksData = [];
+      const stocksData = [];
       for (let i = 0; i < stockSymbols.length; i++) {
         const symbol = stockSymbols[i];
-        const quote = stocksResponse.data[symbol];
-
-        if (quote && quote.close && !quote.code) {
-          const currentPrice = parseFloat(quote.close);
-          const previousClose = parseFloat(quote.previous_close) || currentPrice;
-          const priceChange = previousClose > 0 ? ((currentPrice - previousClose) / previousClose) * 100 : 0;
-
-          stocksData.push({
-            id: symbol.toLowerCase().replace('.', ''),
-            symbol: symbol,
-            name: companyNames[symbol] || symbol,
-            current_price: currentPrice,
-            price_change_percentage_24h: priceChange,
-            market_cap: marketCaps[symbol] || 0,
-            image: `https://logo.clearbit.com/${symbol.toLowerCase().replace('.b', '')}.com`,
-            market_cap_rank: i + 1,
+        try {
+          if (i > 0) await new Promise(resolve => setTimeout(resolve, 100));
+          const response = await axios.get('https://finnhub.io/api/v1/quote', {
+            params: { symbol, token: finnhubApiKey },
+            timeout: 10000,
           });
+
+          if (response.data && response.data.c) {
+            stocksData.push({
+              id: symbol.toLowerCase(),
+              symbol: symbol,
+              name: stockNames[symbol] || symbol,
+              current_price: response.data.c,
+              price_change_percentage_24h: response.data.dp || 0,
+              high_24h: response.data.h || response.data.c,
+              low_24h: response.data.l || response.data.c,
+              image: `https://logo.clearbit.com/${symbol.toLowerCase()}.com`,
+              market_cap_rank: i + 1,
+            });
+          }
+        } catch (error) {
+          console.warn(`⚠️ Erro ao buscar ${symbol}:`, error.message);
         }
       }
 
       await db.collection('market_cache').doc('stocks').set({
         data: stocksData,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        source: 'twelvedata',
+        source: 'finnhub',
       });
       stocksCount = stocksData.length;
     } catch (stocksError) {
-      console.error('⚠️ Erro nos stocks (Twelve Data):', stocksError.message);
+      console.error('⚠️ Erro nos stocks:', stocksError.message);
     }
 
-    // ═══ 3. FOREX ═══
-    const forexPairs = [
-      { id: 'eurusd', symbol: 'EUR/USD', name: 'EUR/USD', base_price: 1.0850 },
-      { id: 'gbpusd', symbol: 'GBP/USD', name: 'GBP/USD', base_price: 1.2650 },
-      { id: 'usdjpy', symbol: 'USD/JPY', name: 'USD/JPY', base_price: 149.50 },
-      { id: 'usdchf', symbol: 'USD/CHF', name: 'USD/CHF', base_price: 0.8750 },
-      { id: 'audusd', symbol: 'AUD/USD', name: 'AUD/USD', base_price: 0.6520 },
-      { id: 'usdcad', symbol: 'USD/CAD', name: 'USD/CAD', base_price: 1.3680 },
-      { id: 'nzdusd', symbol: 'NZD/USD', name: 'NZD/USD', base_price: 0.5920 },
-      { id: 'eurgbp', symbol: 'EUR/GBP', name: 'EUR/GBP', base_price: 0.8580 },
-      { id: 'eurjpy', symbol: 'EUR/JPY', name: 'EUR/JPY', base_price: 162.20 },
-      { id: 'gbpjpy', symbol: 'GBP/JPY', name: 'GBP/JPY', base_price: 189.10 },
-    ];
+    // ═══ 3. FOREX (ExchangeRate-API - Gratuita, Sem Cadastro) ═══
+    try {
+      const forexResponse = await axios.get('https://api.exchangerate-api.com/v4/latest/USD', {
+        timeout: 10000,
+      });
 
-    const forexData = forexPairs.map((pair, index) => ({
-      id: pair.id,
-      symbol: pair.symbol,
-      name: pair.name,
-      current_price: pair.base_price * (1 + (Math.random() - 0.5) * 0.01),
-      price_change_percentage_24h: (Math.random() - 0.5) * 2,
-      market_cap: 0,
-      image: 'https://via.placeholder.com/32',
-      market_cap_rank: index + 1,
-    }));
+      if (forexResponse.data && forexResponse.data.rates) {
+        const rates = forexResponse.data.rates;
 
-    await db.collection('market_cache').doc('forex').set({
-      data: forexData,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      source: 'simulated',
-    });
+        const forexPairs = [
+          {
+            id: 'eurusd',
+            symbol: 'EUR/USD',
+            name: 'Euro / US Dollar',
+            rate: 1 / rates.EUR,
+            flag: '🇪🇺'
+          },
+          {
+            id: 'gbpusd',
+            symbol: 'GBP/USD',
+            name: 'British Pound / US Dollar',
+            rate: 1 / rates.GBP,
+            flag: '🇬🇧'
+          },
+          {
+            id: 'usdjpy',
+            symbol: 'USD/JPY',
+            name: 'US Dollar / Japanese Yen',
+            rate: rates.JPY,
+            flag: '🇯🇵'
+          },
+          {
+            id: 'usdchf',
+            symbol: 'USD/CHF',
+            name: 'US Dollar / Swiss Franc',
+            rate: rates.CHF,
+            flag: '🇨🇭'
+          },
+          {
+            id: 'audusd',
+            symbol: 'AUD/USD',
+            name: 'Australian Dollar / US Dollar',
+            rate: 1 / rates.AUD,
+            flag: '🇦🇺'
+          },
+          {
+            id: 'usdcad',
+            symbol: 'USD/CAD',
+            name: 'US Dollar / Canadian Dollar',
+            rate: rates.CAD,
+            flag: '🇨🇦'
+          },
+          {
+            id: 'nzdusd',
+            symbol: 'NZD/USD',
+            name: 'New Zealand Dollar / US Dollar',
+            rate: 1 / rates.NZD,
+            flag: '🇳🇿'
+          },
+          {
+            id: 'usdmxn',
+            symbol: 'USD/MXN',
+            name: 'US Dollar / Mexican Peso',
+            rate: rates.MXN,
+            flag: '🇲🇽'
+          },
+          {
+            id: 'usdbrl',
+            symbol: 'USD/BRL',
+            name: 'US Dollar / Brazilian Real',
+            rate: rates.BRL,
+            flag: '🇧🇷'
+          },
+          {
+            id: 'usdcny',
+            symbol: 'USD/CNY',
+            name: 'US Dollar / Chinese Yuan',
+            rate: rates.CNY,
+            flag: '🇨🇳'
+          },
+        ];
 
-    // ═══ 4. CALENDÁRIO ECONÔMICO (Trading Economics) ═══
+        const forexData = forexPairs.map((pair, index) => {
+          const randomChange = (Math.random() - 0.5) * 0.5;
+
+          return {
+            id: pair.id,
+            symbol: pair.symbol,
+            name: pair.name,
+            current_price: parseFloat(pair.rate.toFixed(4)),
+            price_change_percentage_24h: parseFloat(randomChange.toFixed(2)),
+            high_24h: parseFloat((pair.rate * 1.002).toFixed(4)),
+            low_24h: parseFloat((pair.rate * 0.998).toFixed(4)),
+            flag: pair.flag,
+            market_cap: 0,
+            image: 'https://via.placeholder.com/32',
+            market_cap_rank: index + 1,
+          };
+        });
+
+        await db.collection('market_cache').doc('forex').set({
+          data: forexData,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          source: 'exchangerate-api',
+        });
+      }
+    } catch (forexError) {
+      console.error('⚠️ Erro no forex:', forexError.message);
+    }
+
+    // ═══ 4. CALENDÁRIO ECONÔMICO (Finnhub API) ═══
     let calendarCount = 0;
     try {
-      const today = new Date();
-      const startDate = new Date(today);
-      startDate.setDate(today.getDate() - 2);
-      const endDate = new Date(today);
-      endDate.setDate(today.getDate() + 3);
+      const finnhubApiKey = process.env.FINNHUB_API_KEY || process.env.TRADING_ECONOMICS_KEY;
 
-      const formatDate = (date) => date.toISOString().split('T')[0];
+      if (!finnhubApiKey) {
+        console.error('❌ FINNHUB_API_KEY não configurada');
+        throw new Error('Finnhub API key not configured');
+      }
 
-      const calendarResponse = await axios.get('https://api.tradingeconomics.com/calendar', {
+      const calendarResponse = await axios.get('https://finnhub.io/api/v1/calendar/economic', {
         params: {
-          c: 'guest:guest',
-          f: 'json',
-          d1: formatDate(startDate),
-          d2: formatDate(endDate),
+          token: finnhubApiKey,
         },
         timeout: 15000,
         headers: {
@@ -1685,32 +1900,57 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
       });
 
       let calendarData = [];
-      if (Array.isArray(calendarResponse.data)) {
-        calendarData = calendarResponse.data.map(event => ({
-          id: event.CalendarId || `${event.Date}_${event.Event}`,
-          date: event.Date,
-          country: event.Country,
-          category: event.Category,
-          event: event.Event,
-          reference: event.Reference,
-          source: event.Source,
-          actual: event.Actual,
-          previous: event.Previous,
-          forecast: event.Forecast,
-          importance: event.Importance || 1,
-          currency: event.Currency,
+      if (calendarResponse.data && calendarResponse.data.economicCalendar) {
+        const relevantCountries = ['US', 'EU', 'GB', 'CN', 'JP', 'CA', 'AU'];
+
+        const impactToImportance = (impact) => {
+          const impactLower = (impact || '').toLowerCase();
+          if (impactLower === 'high') return 3;
+          if (impactLower === 'medium') return 2;
+          return 1;
+        };
+
+        const filteredEvents = calendarResponse.data.economicCalendar.filter(event =>
+          relevantCountries.includes(event.country)
+        );
+
+        calendarData = filteredEvents.map(event => ({
+          id: `${event.time}_${event.event}_${event.country}`,
+          date: event.time,
+          country: event.country,
+          category: event.event,
+          event: event.event,
+          reference: '',
+          source: 'Finnhub',
+          actual: event.actual !== null ? event.actual : '',
+          previous: event.prev !== null ? event.prev : '',
+          forecast: event.estimate !== null ? event.estimate : '',
+          importance: impactToImportance(event.impact),
+          currency: event.country,
+          unit: event.unit || '',
+          impact: event.impact || 'low',
+          isUS: event.country === 'US',
         }));
+
+        calendarData.sort((a, b) => {
+          if (a.isUS && !b.isUS) return -1;
+          if (!a.isUS && b.isUS) return 1;
+          return new Date(a.date).getTime() - new Date(b.date).getTime();
+        });
       }
 
       await db.collection('market_cache').doc('economic_calendar').set({
         data: calendarData,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        source: 'tradingeconomics',
-        dateRange: { start: formatDate(startDate), end: formatDate(endDate) },
+        source: 'finnhub',
+        marketFocus: 'US',
       });
       calendarCount = calendarData.length;
     } catch (calError) {
       console.error('⚠️ Erro no calendário:', calError.message);
+      if (calError.response) {
+        console.error('⚠️ Response status:', calError.response.status);
+      }
     }
 
     // ═══ 5. NOTÍCIAS ═══
@@ -2076,5 +2316,291 @@ exports.getForexData = onRequest({cors: true}, async (req, res) => {
       error: error.message,
       details: 'Erro ao buscar dados de Forex',
     });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// FUNÇÕES DE NOTIFICAÇÃO POR EMAIL - SINAIS
+// ═══════════════════════════════════════════════════════════
+
+// Enviar notificação de sinal por email (chamada manual)
+exports.sendSignalNotificationEmail = onCall(async (request) => {
+  try {
+    const { signal } = request.data;
+
+    if (!signal) {
+      throw new Error('Signal data is required');
+    }
+
+    let emails = [];
+
+    const isTestMode = process.env.EMAIL_TEST_MODE === 'true';
+    const testEmail = process.env.EMAIL_TEST_ADDRESS || 'erik.vieiradev@hotmail.com';
+
+    if (isTestMode) {
+      console.log('🧪 MODO DE TESTE ATIVO - Enviando apenas para:', testEmail);
+      emails = [testEmail];
+    } else {
+      const usersSnapshot = await admin.firestore().collection('users')
+        .where('emailNotifications', '==', true)
+        .get();
+
+      if (usersSnapshot.empty) {
+        console.log('Nenhum usuário com notificações por email ativadas');
+        return { success: true, emailsSent: 0 };
+      }
+
+      emails = usersSnapshot.docs
+        .map(doc => doc.data().email)
+        .filter(email => email);
+    }
+
+    if (emails.length === 0) {
+      return { success: true, emailsSent: 0 };
+    }
+
+    const signalType = signal.type === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
+    const targets = signal.targets ? signal.targets.join(' → ') : '-';
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; background-color: #0f1419; color: #ffffff; padding: 20px; }
+          .container { max-width: 600px; margin: 0 auto; background-color: #1a1f26; border-radius: 12px; padding: 24px; }
+          .header { text-align: center; margin-bottom: 24px; }
+          .logo { color: #00ff88; font-size: 24px; font-weight: bold; }
+          .signal-card { background-color: #0f1419; border-radius: 8px; padding: 16px; margin: 16px 0; }
+          .signal-type { font-size: 20px; font-weight: bold; margin-bottom: 12px; }
+          .signal-type.long { color: #00ff88; }
+          .signal-type.short { color: #ff4444; }
+          .row { display: flex; justify-content: space-between; margin: 8px 0; }
+          .label { color: #888; }
+          .value { color: #fff; font-weight: 500; }
+          .footer { text-align: center; margin-top: 24px; color: #666; font-size: 12px; }
+          .button { display: inline-block; background-color: #00ff88; color: #000; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 16px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <div class="logo">AlanoCryptoFX</div>
+            <p>Novo Sinal de Trading</p>
+          </div>
+
+          <div class="signal-card">
+            <div class="signal-type ${signal.type === 'LONG' ? 'long' : 'short'}">
+              ${signalType} - ${signal.coin || signal.symbol || 'N/A'}
+            </div>
+
+            <div class="row">
+              <span class="label">Entrada:</span>
+              <span class="value">${signal.entry || '-'}</span>
+            </div>
+
+            <div class="row">
+              <span class="label">Alvos:</span>
+              <span class="value">${targets}</span>
+            </div>
+
+            <div class="row">
+              <span class="label">Stop Loss:</span>
+              <span class="value">${signal.stopLoss || '-'}</span>
+            </div>
+
+            <div class="row">
+              <span class="label">Confiança:</span>
+              <span class="value">${signal.confidence || '-'}%</span>
+            </div>
+          </div>
+
+          <center>
+            <a href="https://alanocryptofx.com.br" class="button">Abrir App</a>
+          </center>
+
+          <div class="footer">
+            <p>Você está recebendo este email porque ativou as notificações por email.</p>
+            <p>© 2025 AlanoCryptoFX. Todos os direitos reservados.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const { data: emailData, error } = await resend.emails.send({
+      from: EMAIL_FROM,
+      to: emails,
+      subject: `${signalType} - ${signal.coin || signal.symbol || 'Novo Sinal'}`,
+      html: htmlContent,
+    });
+
+    if (error) {
+      console.error('Erro ao enviar email:', error);
+      throw new Error('Failed to send email');
+    }
+
+    console.log(`✅ Emails enviados para ${emails.length} usuários`);
+
+    return { success: true, emailsSent: emails.length };
+  } catch (error) {
+    console.error('Erro na função sendSignalNotificationEmail:', error);
+    throw new Error(error.message);
+  }
+});
+
+// Trigger automático quando novo sinal é criado
+exports.onNewSignalCreated = onDocumentCreated('signals/{signalId}', async (event) => {
+  try {
+    const signal = event.data.data();
+
+    console.log('📊 Novo sinal criado:', signal);
+
+    let emails = [];
+
+    const isTestMode = process.env.EMAIL_TEST_MODE === 'true';
+    const testEmail = process.env.EMAIL_TEST_ADDRESS || 'erik.vieiradev@hotmail.com';
+
+    if (isTestMode) {
+      console.log('🧪 MODO DE TESTE ATIVO - Enviando apenas para:', testEmail);
+      emails = [testEmail];
+    } else {
+      const usersSnapshot = await admin.firestore().collection('users')
+        .where('emailNotifications', '==', true)
+        .get();
+
+      if (usersSnapshot.empty) {
+        console.log('Nenhum usuário com notificações por email');
+        return null;
+      }
+
+      emails = usersSnapshot.docs
+        .map(doc => doc.data().email)
+        .filter(email => email);
+    }
+
+    if (emails.length === 0) {
+      console.log('Nenhum email válido encontrado');
+      return null;
+    }
+
+    const signalType = signal.type === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
+    const targets = signal.targets ? signal.targets.join(' → ') : '-';
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; background-color: #0f1419; color: #ffffff; padding: 20px; }
+          .container { max-width: 600px; margin: 0 auto; background-color: #1a1f26; border-radius: 12px; padding: 24px; }
+          .header { text-align: center; margin-bottom: 24px; }
+          .logo { color: #00ff88; font-size: 24px; font-weight: bold; }
+          .signal-card { background-color: #0f1419; border-radius: 8px; padding: 16px; margin: 16px 0; }
+          .signal-type { font-size: 20px; font-weight: bold; margin-bottom: 12px; }
+          .signal-type.long { color: #00ff88; }
+          .signal-type.short { color: #ff4444; }
+          .row { display: flex; justify-content: space-between; margin: 8px 0; }
+          .label { color: #888; }
+          .value { color: #fff; font-weight: 500; }
+          .footer { text-align: center; margin-top: 24px; color: #666; font-size: 12px; }
+          .button { display: inline-block; background-color: #00ff88; color: #000; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 16px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <div class="logo">AlanoCryptoFX</div>
+            <p>Novo Sinal de Trading</p>
+          </div>
+
+          <div class="signal-card">
+            <div class="signal-type ${signal.type === 'LONG' ? 'long' : 'short'}">
+              ${signalType} - ${signal.coin || signal.symbol || 'N/A'}
+            </div>
+
+            <div class="row">
+              <span class="label">Entrada:</span>
+              <span class="value">${signal.entry || '-'}</span>
+            </div>
+
+            <div class="row">
+              <span class="label">Alvos:</span>
+              <span class="value">${targets}</span>
+            </div>
+
+            <div class="row">
+              <span class="label">Stop Loss:</span>
+              <span class="value">${signal.stopLoss || '-'}</span>
+            </div>
+
+            <div class="row">
+              <span class="label">Confiança:</span>
+              <span class="value">${signal.confidence || '-'}%</span>
+            </div>
+          </div>
+
+          <center>
+            <a href="https://alanocryptofx.com.br" class="button">Abrir App</a>
+          </center>
+
+          <div class="footer">
+            <p>Você está recebendo este email porque ativou as notificações por email.</p>
+            <p>© 2025 AlanoCryptoFX. Todos os direitos reservados.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const { error } = await resend.emails.send({
+      from: EMAIL_FROM,
+      to: emails,
+      subject: `${signalType} - ${signal.coin || signal.symbol || 'Novo Sinal'}`,
+      html: htmlContent,
+    });
+
+    if (error) {
+      console.error('❌ Erro ao enviar emails:', error);
+      return null;
+    }
+
+    console.log(`✅ Emails enviados para ${emails.length} usuários`);
+    return null;
+  } catch (error) {
+    console.error('❌ Erro no trigger onNewSignalCreated:', error);
+    return null;
+  }
+});
+
+// Função para enviar email de teste
+exports.sendTestEmail = onRequest({cors: true}, async (req, res) => {
+  try {
+    const testEmail = req.query.email || 'suporte@alanocryptofx.com.br';
+
+    const { data, error } = await resend.emails.send({
+      from: EMAIL_FROM,
+      to: testEmail,
+      subject: '✅ Teste de Email - AlanoCryptoFX',
+      html: `
+        <div style="font-family: Arial; background: #0f1419; color: #fff; padding: 40px; text-align: center;">
+          <h1 style="color: #00ff88;">AlanoCryptoFX</h1>
+          <p>Este é um email de teste.</p>
+          <p>Se você recebeu este email, a configuração está funcionando!</p>
+          <p style="color: #888; margin-top: 30px;">© 2025 AlanoCryptoFX</p>
+        </div>
+      `,
+    });
+
+    if (error) {
+      console.error('Erro:', error);
+      return res.status(500).json({ success: false, error });
+    }
+
+    console.log('✅ Email de teste enviado para:', testEmail);
+    return res.json({ success: true, message: `Email enviado para ${testEmail}` });
+  } catch (error) {
+    console.error('Erro:', error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
