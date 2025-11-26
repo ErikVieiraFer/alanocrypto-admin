@@ -108,16 +108,11 @@ export default function Courses() {
         thumbnailUrl = uploadResult.data.url;
       }
 
-      // Validar se tem thumbnail (obrigatório para novo curso)
-      if (!editingCourse && !thumbnailUrl) {
-        toast.error('Thumbnail é obrigatória');
-        setSaving(false);
-        return;
-      }
-
+      // thumbnailUrl é opcional - se não houver, salva como null
+      // O Flutter detecta null e usa a thumbnail padrão do YouTube
       const courseData = {
         ...formData,
-        thumbnailUrl,
+        thumbnailUrl: thumbnailUrl || null,
       };
 
       let result;
@@ -199,7 +194,7 @@ export default function Courses() {
 
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">
-                Descrição *
+                Descrição (opcional)
               </label>
               <textarea
                 value={formData.description}
@@ -207,7 +202,6 @@ export default function Courses() {
                 className="w-full px-4 py-2 bg-primary border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-green-500"
                 placeholder="Descrição do curso"
                 rows={3}
-                required
               />
             </div>
 
@@ -245,7 +239,7 @@ export default function Courses() {
 
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">
-                Thumbnail {!editingCourse && '*'}
+                Thumbnail (opcional)
               </label>
               <input
                 type="file"
@@ -253,6 +247,9 @@ export default function Courses() {
                 onChange={handleThumbnailChange}
                 className="w-full px-4 py-2 bg-primary border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-green-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:bg-green-600 file:text-white hover:file:bg-green-700"
               />
+              <p className="text-xs text-gray-400 mt-1">
+                Deixe vazio para usar thumbnail padrão do YouTube
+              </p>
               {thumbnailPreview && (
                 <div className="mt-2">
                   <img

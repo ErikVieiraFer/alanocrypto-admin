@@ -202,7 +202,7 @@ exports.sendEmailVerification = onCall(async (request) => {
   }
 });
 
-// Verificar código de email
+// Verificar código de email (2FA)
 exports.verifyEmailCode = onCall(async (request) => {
   try {
     const { email, code } = request.data;
@@ -211,10 +211,12 @@ exports.verifyEmailCode = onCall(async (request) => {
       throw new Error('Email e código são obrigatórios');
     }
 
+    const emailLower = email.toLowerCase().trim();
+
     // Buscar código no Firestore
     const verificationsSnapshot = await admin.firestore()
       .collection('email_verifications')
-      .where('email', '==', email)
+      .where('email', '==', emailLower)
       .where('code', '==', code)
       .where('verified', '==', false)
       .get();
@@ -232,13 +234,25 @@ exports.verifyEmailCode = onCall(async (request) => {
       throw new Error('Código expirado. Solicite um novo código.');
     }
 
-    // Marcar como verificado
+    // Marcar código como verificado
     await verificationDoc.ref.update({
       verified: true,
       verifiedAt: now,
     });
 
-    console.log(`✅ Email verificado com sucesso: ${email}`);
+    // Buscar usuário pelo email e atualizar emailVerified no documento
+    try {
+      const userRecord = await admin.auth().getUserByEmail(emailLower);
+      await admin.firestore().collection('users').doc(userRecord.uid).update({
+        emailVerified: true,
+        emailVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log(`✅ Campo emailVerified atualizado para usuário: ${userRecord.uid}`);
+    } catch (updateError) {
+      console.warn('⚠️ Não foi possível atualizar emailVerified no documento do usuário:', updateError.message);
+    }
+
+    console.log(`✅ Email verificado com sucesso: ${emailLower}`);
 
     return { success: true, verified: true };
   } catch (error) {
@@ -2602,5 +2616,483 @@ exports.sendTestEmail = onRequest({cors: true}, async (req, res) => {
   } catch (error) {
     console.error('Erro:', error);
     return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRIGGER DE EMAIL PARA NOVOS POSTS DO ALANO
+// Envia email para usuários quando novo post é criado
+// NÃO MEXE em notificações push - apenas email separado
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Função auxiliar para extrair ID do YouTube
+function extractYouTubeId(url) {
+  if (!url) return null;
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.hostname.includes('youtube.com')) {
+      return urlObj.searchParams.get('v') || null;
+    } else if (urlObj.hostname.includes('youtu.be')) {
+      return urlObj.pathname.slice(1) || null;
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Trigger automático quando novo post do Alano é criado
+exports.onNewAlanoPostEmailTrigger = onDocumentCreated('alano_posts/{postId}', async (event) => {
+  try {
+    const post = event.data.data();
+    const postId = event.params.postId;
+
+    console.log('📰 [EMAIL] Novo post do Alano criado:', post.title);
+
+    let emails = [];
+
+    const isTestMode = process.env.EMAIL_TEST_MODE === 'true';
+    const testEmail = process.env.EMAIL_TEST_ADDRESS || 'erik.vieiradev@hotmail.com';
+
+    if (isTestMode) {
+      console.log('🧪 MODO DE TESTE ATIVO - Enviando apenas para:', testEmail);
+      emails = [testEmail];
+    } else {
+      const usersSnapshot = await admin.firestore().collection('users')
+        .where('emailNotifications', '==', true)
+        .get();
+
+      if (usersSnapshot.empty) {
+        console.log('Nenhum usuário com notificações por email');
+        return null;
+      }
+
+      emails = usersSnapshot.docs
+        .map(doc => doc.data().email)
+        .filter(email => email);
+    }
+
+    if (emails.length === 0) {
+      console.log('Nenhum email válido encontrado');
+      return null;
+    }
+
+    // Extrair video ID se tiver
+    const videoId = extractYouTubeId(post.videoUrl);
+    const thumbnailUrl = post.imageUrl || post.thumbnailUrl ||
+      (videoId ? `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg` : null);
+
+    // Preparar conteúdo do post (limitar a 300 caracteres)
+    const contentPreview = post.content
+      ? post.content.substring(0, 300) + (post.content.length > 300 ? '...' : '')
+      : '';
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            background-color: #0f1419;
+            color: #ffffff;
+            padding: 20px;
+            margin: 0;
+          }
+          .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #1a1f26;
+            border-radius: 12px;
+            padding: 24px;
+          }
+          .header {
+            text-align: center;
+            margin-bottom: 24px;
+          }
+          .logo {
+            color: #00ff88;
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 8px;
+          }
+          .subtitle {
+            color: #888;
+            font-size: 14px;
+          }
+          .post-card {
+            background-color: #0f1419;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+          }
+          .post-title {
+            font-size: 20px;
+            font-weight: bold;
+            color: #fff;
+            margin-bottom: 12px;
+          }
+          .post-content {
+            color: #ccc;
+            line-height: 1.6;
+            margin-bottom: 16px;
+            white-space: pre-wrap;
+          }
+          .thumbnail {
+            width: 100%;
+            max-width: 100%;
+            border-radius: 8px;
+            margin-bottom: 12px;
+          }
+          .video-badge {
+            color: #00ff88;
+            font-size: 14px;
+            margin-top: 12px;
+          }
+          .button {
+            display: inline-block;
+            background-color: #00ff88;
+            color: #000;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: bold;
+            margin-top: 16px;
+          }
+          .footer {
+            text-align: center;
+            margin-top: 24px;
+            color: #666;
+            font-size: 12px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <div class="logo">AlanoCryptoFX</div>
+            <div class="subtitle">📰 Novo Conteúdo Exclusivo</div>
+          </div>
+
+          <div class="post-card">
+            <div class="post-title">${post.title || 'Novo Post'}</div>
+
+            ${thumbnailUrl ? `<img src="${thumbnailUrl}" alt="Thumbnail" class="thumbnail" />` : ''}
+
+            ${contentPreview ? `<div class="post-content">${contentPreview}</div>` : ''}
+
+            ${post.videoUrl ? `<p class="video-badge">🎥 Vídeo disponível no app</p>` : ''}
+          </div>
+
+          <center>
+            <a href="https://alanocryptofx.com.br" class="button">Abrir no App</a>
+          </center>
+
+          <div class="footer">
+            <p>Você está recebendo este email porque ativou as notificações por email.</p>
+            <p>Para desativar, acesse as configurações do seu perfil no app.</p>
+            <p style="margin-top: 16px;">© 2025 AlanoCryptoFX. Todos os direitos reservados.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const { error } = await resend.emails.send({
+      from: EMAIL_FROM,
+      to: emails,
+      subject: `📰 Novo Post: ${post.title || 'Conteúdo Exclusivo'}`,
+      html: htmlContent,
+    });
+
+    if (error) {
+      console.error('❌ Erro ao enviar emails de post:', error);
+      return null;
+    }
+
+    console.log(`✅ [EMAIL] Emails de post enviados para ${emails.length} usuários`);
+    return null;
+  } catch (error) {
+    console.error('❌ Erro no trigger onNewAlanoPostEmailTrigger:', error);
+    return null;
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RECUPERAÇÃO DE SENHA - Enviar código por email
+// ═══════════════════════════════════════════════════════════════════════════════
+exports.sendPasswordResetCode = onCall(async (request) => {
+  console.log('🔐 [sendPasswordResetCode] Iniciando...');
+
+  try {
+    const { email } = request.data;
+
+    if (!email || !email.includes('@')) {
+      console.error('❌ Email inválido:', email);
+      throw new Error('Email inválido');
+    }
+
+    const emailLower = email.toLowerCase().trim();
+    console.log('📧 Email:', emailLower);
+
+    // Verificar se usuário existe no Firebase Auth
+    let userRecord;
+    try {
+      userRecord = await admin.auth().getUserByEmail(emailLower);
+      console.log('✅ Usuário encontrado:', userRecord.uid);
+    } catch (error) {
+      console.error('❌ Usuário não encontrado:', emailLower);
+      throw new Error('Email não cadastrado');
+    }
+
+    // Gerar código de 6 dígitos
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    console.log('🔢 Código gerado:', code);
+
+    // Salvar código no Firestore com expiração de 10 minutos
+    const now = admin.firestore.Timestamp.now();
+    const expiresAt = admin.firestore.Timestamp.fromMillis(
+      now.toMillis() + 10 * 60 * 1000 // 10 minutos
+    );
+
+    await admin.firestore().collection('password_reset_codes').doc(emailLower).set({
+      code: code,
+      email: emailLower,
+      expiresAt: expiresAt,
+      createdAt: now,
+      used: false,
+    });
+    console.log('💾 Código salvo no Firestore');
+
+    // Template HTML do email
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background-color: #0f1419;
+            color: #ffffff;
+            padding: 20px;
+            margin: 0;
+          }
+          .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #1a1f26;
+            border-radius: 16px;
+            padding: 32px;
+            text-align: center;
+          }
+          .logo {
+            color: #16a34a;
+            font-size: 28px;
+            font-weight: bold;
+            margin-bottom: 24px;
+          }
+          .icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+          }
+          .title {
+            font-size: 24px;
+            color: #fff;
+            margin-bottom: 12px;
+            font-weight: bold;
+          }
+          .message {
+            color: #9ca3af;
+            line-height: 1.6;
+            margin-bottom: 24px;
+            font-size: 16px;
+          }
+          .code-box {
+            background-color: #0f1419;
+            border: 2px solid #16a34a;
+            border-radius: 12px;
+            padding: 24px;
+            margin: 24px 0;
+          }
+          .code {
+            font-size: 40px;
+            font-weight: bold;
+            letter-spacing: 10px;
+            color: #16a34a;
+            font-family: 'Courier New', monospace;
+          }
+          .expiration {
+            color: #f59e0b;
+            font-size: 14px;
+            margin-top: 16px;
+          }
+          .warning {
+            background-color: #1f2937;
+            border-left: 4px solid #f59e0b;
+            padding: 16px;
+            margin: 24px 0;
+            text-align: left;
+            border-radius: 0 8px 8px 0;
+          }
+          .warning-text {
+            color: #9ca3af;
+            font-size: 14px;
+            margin: 0;
+          }
+          .footer {
+            margin-top: 32px;
+            color: #6b7280;
+            font-size: 12px;
+            border-top: 1px solid #374151;
+            padding-top: 24px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="logo">AlanoCryptoFX</div>
+          <div class="icon">🔐</div>
+          <div class="title">Recuperação de Senha</div>
+          <div class="message">
+            Você solicitou a recuperação de senha da sua conta.<br>
+            Use o código abaixo para redefinir sua senha:
+          </div>
+
+          <div class="code-box">
+            <div class="code">${code}</div>
+            <div class="expiration">
+              ⏱️ Este código expira em 10 minutos
+            </div>
+          </div>
+
+          <div class="warning">
+            <p class="warning-text">
+              <strong>⚠️ Atenção:</strong> Se você não solicitou esta recuperação de senha, ignore este email. Sua conta permanece segura.
+            </p>
+          </div>
+
+          <div class="footer">
+            <p>© ${new Date().getFullYear()} AlanoCryptoFX. Todos os direitos reservados.</p>
+            <p>Este é um email automático, por favor não responda.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    // Enviar email via Resend
+    console.log('📮 Enviando email de recuperação...');
+
+    const { error } = await resend.emails.send({
+      from: EMAIL_FROM,
+      to: emailLower,
+      subject: '🔐 Código de Recuperação de Senha - AlanoCryptoFX',
+      html: htmlContent,
+    });
+
+    if (error) {
+      console.error('❌ Erro ao enviar email:', error);
+      throw new Error('Erro ao enviar email');
+    }
+
+    console.log(`✅ Código de recuperação enviado para: ${emailLower}`);
+
+    return { success: true, message: 'Código enviado com sucesso' };
+  } catch (error) {
+    console.error('❌ Erro em sendPasswordResetCode:', error);
+    throw error;
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RECUPERAÇÃO DE SENHA - Verificar código e resetar senha
+// ═══════════════════════════════════════════════════════════════════════════════
+exports.verifyPasswordResetCode = onCall(async (request) => {
+  console.log('🔑 [verifyPasswordResetCode] Iniciando...');
+
+  try {
+    const { email, code, newPassword } = request.data;
+
+    if (!email || !code || !newPassword) {
+      console.error('❌ Dados incompletos');
+      throw new Error('Dados incompletos');
+    }
+
+    // Validação de senha forte
+    // Requisitos: mínimo 8 caracteres, maiúscula, minúscula, número e símbolo
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]).{8,}$/;
+
+    if (!passwordRegex.test(newPassword)) {
+      console.error('❌ Senha não atende aos requisitos');
+      throw new Error('Senha deve ter mínimo 8 caracteres com: maiúscula, minúscula, número e símbolo');
+    }
+
+    const emailLower = email.toLowerCase().trim();
+    console.log('📧 Email:', emailLower);
+    console.log('🔢 Código recebido:', code);
+
+    // Buscar código no Firestore
+    const codeDoc = await admin.firestore()
+      .collection('password_reset_codes')
+      .doc(emailLower)
+      .get();
+
+    if (!codeDoc.exists) {
+      console.error('❌ Código não encontrado para:', emailLower);
+      throw new Error('Código não encontrado. Solicite um novo código.');
+    }
+
+    const codeData = codeDoc.data();
+
+    // Validar se código já foi usado
+    if (codeData.used) {
+      console.error('❌ Código já utilizado');
+      throw new Error('Código já utilizado. Solicite um novo código.');
+    }
+
+    // Validar expiração
+    const now = new Date();
+    const expiresAt = codeData.expiresAt.toDate();
+
+    if (now > expiresAt) {
+      console.error('❌ Código expirado');
+      throw new Error('Código expirado. Solicite um novo código.');
+    }
+
+    // Validar código
+    if (codeData.code !== code) {
+      console.error('❌ Código incorreto. Esperado:', codeData.code, 'Recebido:', code);
+      throw new Error('Código incorreto');
+    }
+
+    console.log('✅ Código válido!');
+
+    // Buscar usuário e atualizar senha
+    const userRecord = await admin.auth().getUserByEmail(emailLower);
+    await admin.auth().updateUser(userRecord.uid, {
+      password: newPassword,
+    });
+
+    console.log('✅ Senha atualizada para usuário:', userRecord.uid);
+
+    // Marcar código como usado
+    await admin.firestore()
+      .collection('password_reset_codes')
+      .doc(emailLower)
+      .update({
+        used: true,
+        usedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+    console.log('✅ Código marcado como usado');
+
+    return { success: true, message: 'Senha alterada com sucesso' };
+  } catch (error) {
+    console.error('❌ Erro em verifyPasswordResetCode:', error);
+    throw error;
   }
 });

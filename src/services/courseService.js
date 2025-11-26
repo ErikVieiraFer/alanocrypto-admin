@@ -35,9 +35,7 @@ const validateCourseData = (courseData, isNew = true) => {
     errors.push('Título é obrigatório');
   }
 
-  if (!courseData.description || courseData.description.trim() === '') {
-    errors.push('Descrição é obrigatória');
-  }
+  // description é opcional
 
   if (!courseData.videoUrl || courseData.videoUrl.trim() === '') {
     errors.push('URL do YouTube é obrigatória');
@@ -45,9 +43,7 @@ const validateCourseData = (courseData, isNew = true) => {
     errors.push('URL do YouTube inválida');
   }
 
-  if (isNew && !courseData.thumbnailUrl) {
-    errors.push('Thumbnail é obrigatória para novos cursos');
-  }
+  // thumbnailUrl é opcional - Flutter usa thumbnail do YouTube quando null
 
   return errors;
 };
@@ -80,9 +76,9 @@ export const createCourse = async (courseData) => {
 
     const docRef = await addDoc(collection(db, COLLECTION_NAME), {
       title: courseData.title.trim(),
-      description: courseData.description.trim(),
+      description: courseData.description?.trim() || '', // opcional
       videoUrl: courseData.videoUrl.trim(),
-      thumbnailUrl: courseData.thumbnailUrl,
+      thumbnailUrl: courseData.thumbnailUrl || null, // null = usa thumbnail do YouTube
       order: courseData.order || 0,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -105,7 +101,7 @@ export const updateCourse = async (id, courseData) => {
 
     const updateData = {
       title: courseData.title.trim(),
-      description: courseData.description.trim(),
+      description: courseData.description?.trim() || '', // opcional
       videoUrl: courseData.videoUrl.trim(),
       order: courseData.order || 0,
       updatedAt: serverTimestamp(),
