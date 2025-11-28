@@ -2346,28 +2346,18 @@ exports.sendSignalNotificationEmail = onCall(async (request) => {
       throw new Error('Signal data is required');
     }
 
-    let emails = [];
+    const usersSnapshot = await admin.firestore().collection('users')
+      .where('emailNotifications', '==', true)
+      .get();
 
-    const isTestMode = process.env.EMAIL_TEST_MODE === 'true';
-    const testEmail = process.env.EMAIL_TEST_ADDRESS || 'erik.vieiradev@hotmail.com';
-
-    if (isTestMode) {
-      console.log('🧪 MODO DE TESTE ATIVO - Enviando apenas para:', testEmail);
-      emails = [testEmail];
-    } else {
-      const usersSnapshot = await admin.firestore().collection('users')
-        .where('emailNotifications', '==', true)
-        .get();
-
-      if (usersSnapshot.empty) {
-        console.log('Nenhum usuário com notificações por email ativadas');
-        return { success: true, emailsSent: 0 };
-      }
-
-      emails = usersSnapshot.docs
-        .map(doc => doc.data().email)
-        .filter(email => email);
+    if (usersSnapshot.empty) {
+      console.log('Nenhum usuário com notificações por email ativadas');
+      return { success: true, emailsSent: 0 };
     }
+
+    const emails = usersSnapshot.docs
+      .map(doc => doc.data().email)
+      .filter(email => email);
 
     if (emails.length === 0) {
       return { success: true, emailsSent: 0 };
@@ -2470,28 +2460,18 @@ exports.onNewSignalCreated = onDocumentCreated('signals/{signalId}', async (even
 
     console.log('📊 Novo sinal criado:', signal);
 
-    let emails = [];
+    const usersSnapshot = await admin.firestore().collection('users')
+      .where('emailNotifications', '==', true)
+      .get();
 
-    const isTestMode = process.env.EMAIL_TEST_MODE === 'true';
-    const testEmail = process.env.EMAIL_TEST_ADDRESS || 'erik.vieiradev@hotmail.com';
-
-    if (isTestMode) {
-      console.log('🧪 MODO DE TESTE ATIVO - Enviando apenas para:', testEmail);
-      emails = [testEmail];
-    } else {
-      const usersSnapshot = await admin.firestore().collection('users')
-        .where('emailNotifications', '==', true)
-        .get();
-
-      if (usersSnapshot.empty) {
-        console.log('Nenhum usuário com notificações por email');
-        return null;
-      }
-
-      emails = usersSnapshot.docs
-        .map(doc => doc.data().email)
-        .filter(email => email);
+    if (usersSnapshot.empty) {
+      console.log('Nenhum usuário com notificações por email');
+      return null;
     }
+
+    const emails = usersSnapshot.docs
+      .map(doc => doc.data().email)
+      .filter(email => email);
 
     if (emails.length === 0) {
       console.log('Nenhum email válido encontrado');
@@ -2649,28 +2629,18 @@ exports.onNewAlanoPostEmailTrigger = onDocumentCreated('alano_posts/{postId}', a
 
     console.log('📰 [EMAIL] Novo post do Alano criado:', post.title);
 
-    let emails = [];
+    const usersSnapshot = await admin.firestore().collection('users')
+      .where('emailNotifications', '==', true)
+      .get();
 
-    const isTestMode = process.env.EMAIL_TEST_MODE === 'true';
-    const testEmail = process.env.EMAIL_TEST_ADDRESS || 'erik.vieiradev@hotmail.com';
-
-    if (isTestMode) {
-      console.log('🧪 MODO DE TESTE ATIVO - Enviando apenas para:', testEmail);
-      emails = [testEmail];
-    } else {
-      const usersSnapshot = await admin.firestore().collection('users')
-        .where('emailNotifications', '==', true)
-        .get();
-
-      if (usersSnapshot.empty) {
-        console.log('Nenhum usuário com notificações por email');
-        return null;
-      }
-
-      emails = usersSnapshot.docs
-        .map(doc => doc.data().email)
-        .filter(email => email);
+    if (usersSnapshot.empty) {
+      console.log('Nenhum usuário com notificações por email');
+      return null;
     }
+
+    const emails = usersSnapshot.docs
+      .map(doc => doc.data().email)
+      .filter(email => email);
 
     if (emails.length === 0) {
       console.log('Nenhum email válido encontrado');
@@ -2971,7 +2941,7 @@ exports.sendPasswordResetCode = onCall(async (request) => {
 
           <div class="warning">
             <p class="warning-text">
-              <strong>⚠️ Atenção:</strong> Se você não solicitou esta recuperação de senha, ignore este email. Sua conta permanece segura.
+              <strong>⚠️ Atenção:</strong> Se você não solicitou esta recuperação, ignore este email.
             </p>
           </div>
 
