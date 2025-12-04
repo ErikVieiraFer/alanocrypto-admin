@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
-import { Plus, Edit, Trash, Heart, Eye, Image as ImageIcon, Video } from 'lucide-react';
+import { Plus, Edit, Trash, Heart, Eye, Image as ImageIcon, Video, Mail, MailX } from 'lucide-react';
 import Layout from '../components/Layout';
 import Modal from '../components/Modal';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -23,6 +23,7 @@ const AlanoPosts = () => {
   const [uploadingImage, setUploadingImage] = useState(false);
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState(null);
+  const [sendEmailNotification, setSendEmailNotification] = useState(true);
 
   const {
     register,
@@ -44,6 +45,7 @@ const AlanoPosts = () => {
     setEditingPost(null);
     setImageFile(null);
     setImagePreview(null);
+    setSendEmailNotification(true);
     reset({
       title: '',
       content: '',
@@ -141,11 +143,11 @@ const AlanoPosts = () => {
       }
       // CRIAR novo post
       else {
-        // Preparar dados do post (sem imagem por enquanto)
         const postData = {
           title: data.title,
           content: data.content,
           videoUrl: data.videoUrl || '',
+          sendEmailNotification: sendEmailNotification,
         };
 
         // Criar o post primeiro para obter o ID
@@ -388,6 +390,41 @@ const AlanoPosts = () => {
               </div>
             )}
           </div>
+
+          {!editingPost && (
+            <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3">
+                  {sendEmailNotification ? (
+                    <Mail className="text-green-500" size={24} />
+                  ) : (
+                    <MailX className="text-gray-500" size={24} />
+                  )}
+                  <div>
+                    <p className="text-white font-medium">Notificar por Email</p>
+                    <p className="text-gray-400 text-sm">
+                      {sendEmailNotification
+                        ? 'Usuários receberão email sobre este post'
+                        : 'Nenhum email será enviado'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSendEmailNotification(!sendEmailNotification)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    sendEmailNotification ? 'bg-green-500' : 'bg-gray-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      sendEmailNotification ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Buttons */}
           <div className="flex justify-end space-x-3 pt-4">

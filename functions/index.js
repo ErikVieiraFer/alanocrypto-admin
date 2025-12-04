@@ -6,19 +6,56 @@ const { Resend } = require('resend');
 const axios = require('axios');
 const cors = require('cors')({origin: true});
 
-// Configurar Resend
-// IMPORTANTE: Cole sua API Key da Resend aqui ou no arquivo .env
-const resend = new Resend(process.env.RESEND_API_KEY || 'USUARIO_VAI_COLAR_AQUI');
-const EMAIL_FROM = process.env.EMAIL_FROM || 'onboarding@resend.dev';
+const resend = new Resend('re_D69j8Fvi_FKMwYdGUvvtebz3Q616wfcV8');
+const EMAIL_FROM = 'suporte@alanocryptofx.com.br';
 
 admin.initializeApp();
+
+exports.testResendEmail = onRequest({
+  memory: '128MiB',
+  timeoutSeconds: 30
+}, async (req, res) => {
+  try {
+    const testEmail = req.query.email || 'erik.vieiradev@hotmail.com';
+    console.log('🧪 Testando envio de email para:', testEmail);
+    console.log('📤 Remetente:', EMAIL_FROM);
+
+    const result = await resend.emails.send({
+      from: EMAIL_FROM,
+      to: testEmail,
+      subject: '🧪 Teste Resend - AlanoCryptoFX',
+      html: '<h1>Teste de Email</h1><p>Se você está vendo isso, o Resend está funcionando!</p>',
+    });
+
+    console.log('📧 Resposta do Resend:', JSON.stringify(result, null, 2));
+
+    res.json({
+      success: true,
+      message: 'Email enviado!',
+      resendResponse: result,
+      from: EMAIL_FROM,
+      to: testEmail
+    });
+  } catch (error) {
+    console.error('❌ Erro Resend:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error,
+      from: EMAIL_FROM
+    });
+  }
+});
 
 // ═══════════════════════════════════════════════════════════
 // FUNÇÕES DE VERIFICAÇÃO DE EMAIL
 // ═══════════════════════════════════════════════════════════
 
 // Enviar código de verificação de email
-exports.sendEmailVerification = onCall(async (request) => {
+exports.sendEmailVerification = onCall({
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (request) => {
   console.log('🔵 [sendEmailVerification] Iniciando...');
 
   try {
@@ -203,7 +240,10 @@ exports.sendEmailVerification = onCall(async (request) => {
 });
 
 // Verificar código de email (2FA)
-exports.verifyEmailCode = onCall(async (request) => {
+exports.verifyEmailCode = onCall({
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (request) => {
   try {
     const { email, code } = request.data;
 
@@ -262,7 +302,10 @@ exports.verifyEmailCode = onCall(async (request) => {
 });
 
 // Deletar usuário do Authentication e Firestore
-exports.deleteUser = onCall(async (request) => {
+exports.deleteUser = onCall({
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (request) => {
   try {
     const { userId } = request.data;
 
@@ -301,66 +344,84 @@ exports.deleteUser = onCall(async (request) => {
 // ═══════════════════════════════════════════════════════════
 
 // Enviar notificação quando novo sinal é criado
-exports.onSignalCreated = onDocumentCreated('signals/{signalId}', async (event) => {
-    try {
-      const signal = event.data.data();
+exports.onSignalCreated = onDocumentCreated({
+  document: 'signals/{signalId}',
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (event) => {
+  try {
+    const signal = event.data.data();
+    console.log('🚀 Novo sinal criado:', signal.coin);
 
-      console.log('🚀 Novo sinal criado:', signal.coin);
+    const usersSnapshot = await admin.firestore()
+      .collection('users')
+      .where('approved', '==', true)
+      .get();
 
-      // Buscar usuários com notificações ativas
-      const usersSnapshot = await admin.firestore()
-        .collection('users')
-        .where('notificationsEnabled', '==', true)
-        .where('approved', '==', true)
-        .get();
+    if (usersSnapshot.empty) {
+      console.log('⚠️ Nenhum usuário aprovado encontrado');
+      return null;
+    }
 
-      if (usersSnapshot.empty) {
-        console.log('⚠️ Nenhum usuário com notificações ativas');
-        return null;
-      }
+    const tokens = [];
+    const emailRecipients = [];
 
-      // Coletar tokens
-      const tokens = [];
-      usersSnapshot.forEach(doc => {
-        const userData = doc.data();
+    usersSnapshot.forEach(doc => {
+      const userData = doc.data();
+      const prefs = userData.notificationPreferences || {};
+
+      if (prefs.signals !== false) {
         if (userData.fcmToken) {
           tokens.push(userData.fcmToken);
         }
-      });
-
-      if (tokens.length === 0) {
-        console.log('⚠️ Nenhum token FCM encontrado');
-        return null;
+        if (userData.email && userData.emailNotifications) {
+          emailRecipients.push(userData.email);
+        }
       }
+    });
 
-      console.log(`📱 Enviando para ${tokens.length} usuários`);
+    console.log(`📱 FCM: ${tokens.length} usuários | 📧 Email: ${emailRecipients.length} usuários`);
 
-      // Preparar mensagem
-      const typeEmoji = signal.type === 'long' ? '📈' : '📉';
-      const typeName = signal.type === 'long' ? 'LONG' : 'SHORT';
+    if (tokens.length === 0 && emailRecipients.length === 0) {
+      console.log('⚠️ Nenhum usuário com notificações de sinais ativas');
+      return null;
+    }
 
+    const typeEmoji = signal.type === 'long' ? '📈' : '📉';
+    const typeName = signal.type === 'long' ? 'LONG' : 'SHORT';
+
+    if (tokens.length > 0) {
       const message = {
-        notification: {
-          title: `${typeEmoji} Novo Sinal: ${signal.coin}`,
-          body: `${typeName} - Entrada: ${signal.entry}`,
-        },
         data: {
           type: 'signal',
           signalId: event.params.signalId,
           coin: signal.coin,
           signalType: signal.type,
+          notificationTitle: `${typeEmoji} Novo Sinal ${typeName}: ${signal.coin}`,
+          body: `Entrada: ${signal.entry} | SL: ${signal.stopLoss || 'N/A'}`,
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+        tokens: tokens,
+        android: {
+          priority: 'high',
+        },
+        apns: {
+          payload: {
+            aps: {
+              'content-available': 1,
+            },
+          },
+        },
+        webpush: {
+          headers: {
+            Urgency: 'high',
+          },
         },
       };
 
-      // Enviar notificação em lote
-      const response = await admin.messaging().sendEachForMulticast({
-        tokens: tokens,
-        ...message,
-      });
+      const response = await admin.messaging().sendEachForMulticast(message);
+      console.log(`✅ FCM enviado: ${response.successCount} sucesso, ${response.failureCount} falhas`);
 
-      console.log(`✅ Enviado: ${response.successCount} sucesso, ${response.failureCount} falhas`);
-
-      // Limpar tokens inválidos
       if (response.failureCount > 0) {
         const tokensToRemove = [];
         response.responses.forEach((resp, idx) => {
@@ -369,253 +430,116 @@ exports.onSignalCreated = onDocumentCreated('signals/{signalId}', async (event) 
           }
         });
 
-        // Remover tokens inválidos do Firestore
-        const batch = admin.firestore().batch();
-        for (const token of tokensToRemove) {
-          const userQuery = await admin.firestore()
-            .collection('users')
-            .where('fcmToken', '==', token)
-            .get();
-
-          userQuery.forEach(doc => {
-            batch.update(doc.ref, { fcmToken: admin.firestore.FieldValue.delete() });
-          });
-        }
-        await batch.commit();
-        console.log(`🧹 ${tokensToRemove.length} tokens inválidos removidos`);
-      }
-
-      // ═══════════════════════════════════════════════════════════
-      // ENVIAR EMAILS PARA USUÁRIOS COM EMAIL NOTIFICATIONS ATIVO
-      // ═══════════════════════════════════════════════════════════
-
-      // Buscar usuários com notificações de email ativas
-      const emailUsersSnapshot = await admin.firestore()
-        .collection('users')
-        .where('emailNotifications', '==', true)
-        .where('approved', '==', true)
-        .get();
-
-      if (!emailUsersSnapshot.empty) {
-        const emails = [];
-        emailUsersSnapshot.forEach(doc => {
-          const userData = doc.data();
-          if (userData.email) {
-            emails.push(userData.email);
+        if (tokensToRemove.length > 0) {
+          const batch = admin.firestore().batch();
+          for (const token of tokensToRemove) {
+            const userQuery = await admin.firestore()
+              .collection('users')
+              .where('fcmToken', '==', token)
+              .get();
+            userQuery.forEach(doc => {
+              batch.update(doc.ref, { fcmToken: admin.firestore.FieldValue.delete() });
+            });
           }
-        });
-
-        if (emails.length > 0) {
-          console.log(`📧 Enviando emails para ${emails.length} usuários`);
-
-          // Preparar alvos formatados
-          const targetsHtml = signal.targets && signal.targets.length > 0
-            ? signal.targets.map((target, idx) => `
-                <div style="padding: 8px 0; border-bottom: 1px solid #333;">
-                  <strong>Alvo ${idx + 1}:</strong> ${target}
-                </div>
-              `).join('')
-            : '<div style="padding: 8px 0;">Nenhum alvo definido</div>';
-
-          // Template HTML do email
-          const emailHtml = `
-            <!DOCTYPE html>
-            <html>
-              <head>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <style>
-                  body {
-                    margin: 0;
-                    padding: 0;
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-                    background-color: #0a0a0a;
-                    color: #ffffff;
-                  }
-                  .container {
-                    max-width: 600px;
-                    margin: 0 auto;
-                    background-color: #1a1a1a;
-                  }
-                  .header {
-                    background: linear-gradient(135deg, ${signal.type === 'long' ? '#00ff01' : '#ff0000'} 0%, ${signal.type === 'long' ? '#00cc01' : '#cc0000'} 100%);
-                    padding: 40px 20px;
-                    text-align: center;
-                  }
-                  .header h1 {
-                    margin: 0;
-                    color: #0a0a0a;
-                    font-size: 32px;
-                    font-weight: bold;
-                  }
-                  .signal-type {
-                    display: inline-block;
-                    padding: 8px 16px;
-                    background-color: rgba(0,0,0,0.2);
-                    border-radius: 20px;
-                    margin-top: 10px;
-                    font-size: 14px;
-                    font-weight: bold;
-                  }
-                  .content {
-                    padding: 30px 20px;
-                  }
-                  .signal-info {
-                    background-color: #0a0a0a;
-                    border: 2px solid ${signal.type === 'long' ? '#00ff01' : '#ff0000'};
-                    border-radius: 12px;
-                    padding: 20px;
-                    margin: 20px 0;
-                  }
-                  .info-row {
-                    display: flex;
-                    justify-content: space-between;
-                    padding: 12px 0;
-                    border-bottom: 1px solid #333;
-                  }
-                  .info-row:last-child {
-                    border-bottom: none;
-                  }
-                  .info-label {
-                    color: #888;
-                    font-size: 14px;
-                  }
-                  .info-value {
-                    color: ${signal.type === 'long' ? '#00ff01' : '#ff0000'};
-                    font-weight: bold;
-                    font-size: 16px;
-                  }
-                  .targets-section {
-                    background-color: #2a2a2a;
-                    border-radius: 8px;
-                    padding: 15px;
-                    margin: 20px 0;
-                  }
-                  .targets-title {
-                    color: #00ff01;
-                    font-weight: bold;
-                    margin-bottom: 10px;
-                  }
-                  .button {
-                    display: inline-block;
-                    background: linear-gradient(135deg, #00ff01 0%, #00cc01 100%);
-                    color: #0a0a0a;
-                    padding: 14px 32px;
-                    text-decoration: none;
-                    border-radius: 8px;
-                    font-weight: bold;
-                    margin: 20px 0;
-                    transition: transform 0.2s;
-                  }
-                  .button:hover {
-                    transform: translateY(-2px);
-                  }
-                  .risk-warning {
-                    background-color: #2a2a2a;
-                    border-left: 4px solid #ff6b6b;
-                    padding: 15px;
-                    margin: 20px 0;
-                    font-size: 13px;
-                    color: #cccccc;
-                  }
-                  .footer {
-                    padding: 20px;
-                    text-align: center;
-                    color: #666666;
-                    font-size: 12px;
-                    border-top: 1px solid #333333;
-                  }
-                  .footer a {
-                    color: #00ff01;
-                    text-decoration: none;
-                  }
-                </style>
-              </head>
-              <body>
-                <div class="container">
-                  <div class="header">
-                    <h1>${typeEmoji} ${signal.coin}</h1>
-                    <div class="signal-type">${typeName}</div>
-                  </div>
-                  <div class="content">
-                    <h2 style="color: #00ff01; margin-top: 0;">Novo Sinal Disponível!</h2>
-                    <p style="color: #cccccc;">Um novo sinal de trading foi publicado. Confira os detalhes abaixo:</p>
-
-                    <div class="signal-info">
-                      <div class="info-row">
-                        <span class="info-label">Moeda</span>
-                        <span class="info-value">${signal.coin}</span>
-                      </div>
-                      <div class="info-row">
-                        <span class="info-label">Tipo</span>
-                        <span class="info-value">${typeName}</span>
-                      </div>
-                      <div class="info-row">
-                        <span class="info-label">Entrada</span>
-                        <span class="info-value">${signal.entry}</span>
-                      </div>
-                      ${signal.stopLoss ? `
-                      <div class="info-row">
-                        <span class="info-label">Stop Loss</span>
-                        <span class="info-value" style="color: #ff6b6b;">${signal.stopLoss}</span>
-                      </div>
-                      ` : ''}
-                    </div>
-
-                    ${signal.targets && signal.targets.length > 0 ? `
-                    <div class="targets-section">
-                      <div class="targets-title">🎯 Alvos (Targets)</div>
-                      ${targetsHtml}
-                    </div>
-                    ` : ''}
-
-                    <div style="text-align: center;">
-                      <a href="https://alanocryptofx-v2.web.app" class="button">Ver no App</a>
-                    </div>
-
-                    <div class="risk-warning">
-                      <strong>⚠️ Aviso de Risco:</strong><br>
-                      Trading de criptomoedas envolve riscos significativos. Nunca invista mais do que você pode perder. Este sinal não constitui aconselhamento financeiro.
-                    </div>
-                  </div>
-                  <div class="footer">
-                    <p>© ${new Date().getFullYear()} AlanoCryptoFX. Todos os direitos reservados.</p>
-                    <p><a href="https://alanocryptofx-v2.web.app/settings">Desativar notificações por email</a></p>
-                  </div>
-                </div>
-              </body>
-            </html>
-          `;
-
-          // Enviar emails (um por vez para evitar rate limiting)
-          let emailsSent = 0;
-          for (const email of emails) {
-            try {
-              await resend.emails.send({
-                from: EMAIL_FROM,
-                to: email,
-                subject: `${typeEmoji} Novo Sinal: ${signal.coin} (${typeName})`,
-                html: emailHtml,
-              });
-              emailsSent++;
-            } catch (emailError) {
-              console.error(`❌ Erro ao enviar email para ${email}:`, emailError);
-            }
-          }
-
-          console.log(`✅ ${emailsSent} emails enviados com sucesso`);
+          await batch.commit();
+          console.log(`🧹 ${tokensToRemove.length} tokens inválidos removidos`);
         }
       }
-
-      return null;
-    } catch (error) {
-      console.error('❌ Erro ao enviar notificações:', error);
-      return null;
     }
-  });
+
+    if (emailRecipients.length > 0) {
+      const targetsHtml = signal.targets && signal.targets.length > 0
+        ? signal.targets.map((target, idx) => `
+            <div style="padding: 8px 0; border-bottom: 1px solid #333;">
+              <strong>Alvo ${idx + 1}:</strong> ${target}
+            </div>
+          `).join('')
+        : '<div style="padding: 8px 0;">Nenhum alvo definido</div>';
+
+      const emailHtml = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+              body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background-color: #0a0a0a; color: #ffffff; }
+              .container { max-width: 600px; margin: 0 auto; background-color: #1a1a1a; }
+              .header { background: linear-gradient(135deg, ${signal.type === 'long' ? '#00ff01' : '#ff0000'} 0%, ${signal.type === 'long' ? '#00cc01' : '#cc0000'} 100%); padding: 40px 20px; text-align: center; }
+              .header h1 { margin: 0; color: #0a0a0a; font-size: 32px; font-weight: bold; }
+              .signal-type { display: inline-block; padding: 8px 16px; background-color: rgba(0,0,0,0.2); border-radius: 20px; margin-top: 10px; font-size: 14px; font-weight: bold; }
+              .content { padding: 30px 20px; }
+              .signal-info { background-color: #0a0a0a; border: 2px solid ${signal.type === 'long' ? '#00ff01' : '#ff0000'}; border-radius: 12px; padding: 20px; margin: 20px 0; }
+              .info-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #333; }
+              .info-row:last-child { border-bottom: none; }
+              .info-label { color: #888; font-size: 14px; }
+              .info-value { color: ${signal.type === 'long' ? '#00ff01' : '#ff0000'}; font-weight: bold; font-size: 16px; }
+              .targets-section { background-color: #2a2a2a; border-radius: 8px; padding: 15px; margin: 20px 0; }
+              .targets-title { color: #00ff01; font-weight: bold; margin-bottom: 10px; }
+              .button { display: inline-block; background: linear-gradient(135deg, #00ff01 0%, #00cc01 100%); color: #0a0a0a; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: bold; margin: 20px 0; }
+              .risk-warning { background-color: #2a2a2a; border-left: 4px solid #ff6b6b; padding: 15px; margin: 20px 0; font-size: 13px; color: #cccccc; }
+              .footer { padding: 20px; text-align: center; color: #666666; font-size: 12px; border-top: 1px solid #333333; }
+              .footer a { color: #00ff01; text-decoration: none; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>${typeEmoji} ${signal.coin}</h1>
+                <div class="signal-type">${typeName}</div>
+              </div>
+              <div class="content">
+                <h2 style="color: #00ff01; margin-top: 0;">Novo Sinal Disponível!</h2>
+                <p style="color: #cccccc;">Um novo sinal de trading foi publicado. Confira os detalhes abaixo:</p>
+                <div class="signal-info">
+                  <div class="info-row"><span class="info-label">Moeda</span><span class="info-value">${signal.coin}</span></div>
+                  <div class="info-row"><span class="info-label">Tipo</span><span class="info-value">${typeName}</span></div>
+                  <div class="info-row"><span class="info-label">Entrada</span><span class="info-value">${signal.entry}</span></div>
+                  ${signal.stopLoss ? `<div class="info-row"><span class="info-label">Stop Loss</span><span class="info-value" style="color: #ff6b6b;">${signal.stopLoss}</span></div>` : ''}
+                </div>
+                ${signal.targets && signal.targets.length > 0 ? `<div class="targets-section"><div class="targets-title">🎯 Alvos (Targets)</div>${targetsHtml}</div>` : ''}
+                <div style="text-align: center;"><a href="https://alanocryptofx-v2.web.app" class="button">Ver no App</a></div>
+                <div class="risk-warning"><strong>⚠️ Aviso de Risco:</strong><br>Trading de criptomoedas envolve riscos significativos. Nunca invista mais do que você pode perder.</div>
+              </div>
+              <div class="footer">
+                <p>© ${new Date().getFullYear()} AlanoCryptoFX. Todos os direitos reservados.</p>
+                <p><a href="https://alanocryptofx-v2.web.app/settings">Desativar notificações por email</a></p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `;
+
+      let emailsSent = 0;
+      for (const email of emailRecipients) {
+        try {
+          await resend.emails.send({
+            from: EMAIL_FROM,
+            to: email,
+            subject: `${typeEmoji} Novo Sinal: ${signal.coin} (${typeName})`,
+            html: emailHtml,
+          });
+          emailsSent++;
+        } catch (emailError) {
+          console.error(`❌ Erro ao enviar email para ${email}:`, emailError);
+        }
+      }
+      console.log(`✅ ${emailsSent} emails enviados com sucesso`);
+    }
+
+    return null;
+  } catch (error) {
+    console.error('❌ Erro ao processar novo sinal:', error);
+    return null;
+  }
+});
 
 // Enviar notificação quando novo post do Alano é criado
-exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (event) => {
+exports.onAlanoPostCreated = onDocumentCreated({
+  document: 'alano_posts/{postId}',
+  memory: '512MiB',
+  timeoutSeconds: 540
+}, async (event) => {
   try {
     const postId = event.params.postId;
     const postRef = event.data.ref;
@@ -623,7 +547,6 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
 
     console.log(`📝 Novo post do Alano: ${post.title}`);
 
-    // Proteção anti-duplicação com transação atômica
     const alreadyProcessed = await admin.firestore().runTransaction(async (transaction) => {
       const postDoc = await transaction.get(postRef);
       const postData = postDoc.data();
@@ -648,10 +571,6 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
 
     console.log('✅ Post marcado como processado');
 
-    // ═══════════════════════════════════════════════════════════
-    // CRIAR 1 NOTIFICAÇÃO GLOBAL COMPARTILHADA (Em vez de 360)
-    // ═══════════════════════════════════════════════════════════
-
     await admin.firestore().collection('global_notifications').doc(postId).set({
       type: 'alano_post',
       title: '📝 Novo Post do Alano',
@@ -665,61 +584,65 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
 
     console.log('✅ 1 notificação global criada (compartilhada por todos)');
 
-    // ═══════════════════════════════════════════════════════════
-    // ENVIAR PUSH NOTIFICATIONS (Igual antes)
-    // ═══════════════════════════════════════════════════════════
-
     const usersSnapshot = await admin.firestore()
       .collection('users')
       .where('approved', '==', true)
       .get();
 
     if (usersSnapshot.empty) {
-      console.log('⚠️ Nenhum usuário aprovado');
+      console.log('⚠️ Nenhum usuário aprovado encontrado');
       return null;
     }
 
-    const tokens = new Set();
+    const tokens = [];
     usersSnapshot.forEach((userDoc) => {
       const userData = userDoc.data();
-      if (userData.fcmToken && userData.notificationsEnabled) {
-        tokens.add(userData.fcmToken);
+      const prefs = userData.notificationPreferences || {};
+
+      if (prefs.posts !== false) {
+        if (userData.fcmToken) {
+          tokens.push(userData.fcmToken);
+        }
       }
     });
 
-    const uniqueTokens = Array.from(tokens);
+    console.log(`📱 FCM: ${tokens.length} usuários com notificações de posts ativas`);
 
-    if (uniqueTokens.length > 0) {
-      console.log(`📱 Enviando push para ${uniqueTokens.length} dispositivos`);
-
-      const response = await admin.messaging().sendEachForMulticast({
-        tokens: uniqueTokens,
+    if (tokens.length > 0) {
+      const message = {
         data: {
           type: 'alano_post',
           postId: postId,
-          title: post.title,
-          body: post.title,
-          notificationTitle: '📝 Novo Post do Alano',
+          notificationTitle: '📝 Novo Post do Alano!',
+          body: post.title || 'Confira o novo conteúdo',
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
         },
-        android: { priority: 'high' },
+        tokens: tokens,
+        android: {
+          priority: 'high',
+        },
         apns: {
           payload: {
             aps: {
               'content-available': 1,
-              'thread-id': postId,
             },
           },
         },
-        webpush: { headers: { Urgency: 'high' } },
-      });
+        webpush: {
+          headers: {
+            Urgency: 'high',
+          },
+        },
+      };
 
-      console.log(`✅ Push: ${response.successCount} sucesso, ${response.failureCount} falhas`);
+      const response = await admin.messaging().sendEachForMulticast(message);
+      console.log(`✅ FCM enviado: ${response.successCount} sucesso, ${response.failureCount} falhas`);
 
       if (response.failureCount > 0) {
         const tokensToRemove = [];
         response.responses.forEach((resp, idx) => {
           if (!resp.success) {
-            tokensToRemove.push(uniqueTokens[idx]);
+            tokensToRemove.push(tokens[idx]);
           }
         });
 
@@ -740,152 +663,388 @@ exports.onAlanoPostCreated = onDocumentCreated('alano_posts/{postId}', async (ev
       }
     }
 
+    if (post.sendEmailNotification === false) {
+      console.log('📧 Email desabilitado pelo admin para este post');
+    } else {
+      const emailUsers = [];
+      usersSnapshot.forEach((userDoc) => {
+        const userData = userDoc.data();
+        const prefs = userData.notificationPreferences || {};
+        if (prefs.postsEmail !== false && userData.email && userData.email.trim() !== '') {
+          emailUsers.push({
+            email: userData.email,
+            displayName: userData.displayName || 'Membro',
+          });
+        }
+      });
+
+      const MAX_EMAILS_PER_POST = 90;
+      const limitedEmailUsers = emailUsers.slice(0, MAX_EMAILS_PER_POST);
+
+      console.log(`📧 [EMAIL] Total qualificados: ${emailUsers.length}`);
+      console.log(`📧 [EMAIL] Enviando para: ${limitedEmailUsers.length} (limite: ${MAX_EMAILS_PER_POST})`);
+
+      if (emailUsers.length > MAX_EMAILS_PER_POST) {
+        console.log(`⚠️ [EMAIL] ${emailUsers.length - MAX_EMAILS_PER_POST} usuários não receberão (limite diário)`);
+      }
+
+      if (limitedEmailUsers.length > 0) {
+        let emailsSent = 0;
+        let emailsFailed = 0;
+
+        for (const user of limitedEmailUsers) {
+          try {
+            const htmlContent = `
+              <!DOCTYPE html>
+              <html>
+                <head>
+                  <meta charset="utf-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                </head>
+                <body style="font-family: Arial, sans-serif; background-color: #0f0f0f; margin: 0; padding: 20px;">
+                  <div style="max-width: 600px; margin: 0 auto; background-color: #1a1a1a; border-radius: 12px; overflow: hidden; border: 1px solid #2a2a2a;">
+                    <div style="background: linear-gradient(135deg, #00d4aa 0%, #00a884 100%); padding: 30px; text-align: center;">
+                      <h1 style="color: white; margin: 0; font-size: 24px;">🎥 Novo Post do Alano</h1>
+                    </div>
+                    <div style="padding: 30px; color: #e0e0e0;">
+                      <p>Olá, ${user.displayName}!</p>
+                      <h2 style="color: #00d4aa; margin-top: 0;">${post.title}</h2>
+                      <p style="font-size: 16px; line-height: 1.6; color: #b0b0b0;">Alano acabou de publicar um novo conteúdo exclusivo para membros.</p>
+                      ${post.videoUrl ? `
+                        <div style="background-color: #0f0f0f; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center; border: 1px solid #2a2a2a;">
+                          <p style="color: #00d4aa; font-weight: bold; margin-bottom: 15px;">📹 Vídeo Disponível</p>
+                          <a href="${post.videoUrl}" style="display: inline-block; background: linear-gradient(135deg, #00d4aa 0%, #00a884 100%); color: white; text-decoration: none; padding: 12px 30px; border-radius: 6px; font-weight: bold;">Assistir Agora</a>
+                        </div>
+                      ` : ''}
+                      <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #2a2a2a; text-align: center;">
+                        <a href="https://alanocryptofx.com.br" style="display: inline-block; background-color: transparent; color: #00d4aa; text-decoration: none; padding: 10px 20px; border: 2px solid #00d4aa; border-radius: 6px; font-weight: bold;">Abrir App</a>
+                      </div>
+                    </div>
+                    <div style="background-color: #0f0f0f; padding: 20px; text-align: center; border-top: 1px solid #2a2a2a;">
+                      <p style="color: #666; font-size: 12px; margin: 0;">Você está recebendo este email porque ativou notificações de posts do Alano.</p>
+                      <p style="color: #666; font-size: 12px; margin: 5px 0 0 0;">© 2025 AlanoCryptoFX. Todos os direitos reservados.</p>
+                    </div>
+                  </div>
+                </body>
+              </html>
+            `;
+
+            await resend.emails.send({
+              from: EMAIL_FROM,
+              to: [user.email],
+              subject: `🎥 Novo Post: ${post.title}`,
+              html: htmlContent,
+            });
+
+            emailsSent++;
+
+            if (emailsSent % 10 === 0) {
+              console.log(`📧 [EMAIL] Progresso: ${emailsSent}/${emailUsers.length}`);
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 600));
+
+          } catch (err) {
+            emailsFailed++;
+            console.error(`❌ [EMAIL] Falha para ${user.email}: ${err.message}`);
+            await new Promise(resolve => setTimeout(resolve, 600));
+          }
+        }
+
+        console.log(`✅ [EMAIL] Concluído: ${emailsSent} enviados, ${emailsFailed} falharam de ${limitedEmailUsers.length}`);
+      }
+    }
+
     return null;
   } catch (error) {
-    console.error('❌ Erro:', error);
+    console.error('❌ Erro ao processar novo post:', error);
     return null;
   }
 });
 
-// Enviar notificação quando usuário é mencionado no chat
-exports.onChatMessageCreated = onDocumentCreated('chat_messages/{messageId}', async (event) => {
+exports.onChatMessageCreated = onDocumentCreated({
+  document: 'chat_messages/{messageId}',
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (event) => {
   const messageId = event.params.messageId;
   const messageData = event.data.data();
 
-  console.log(`📬 Nova mensagem criada: ${messageId}`);
+  console.log(`💬 [CHAT] Nova mensagem criada: ${messageId}`);
 
-  if (!messageData.mentions || messageData.mentions.length === 0) {
-    console.log('⚠️ Mensagem sem menções, função encerrada');
-    return null;
-  }
+  const senderName = messageData.userName || 'Alguém';
+  const senderId = messageData.userId;
 
-  console.log(`📝 Mensagem tem ${messageData.mentions.length} menção(ões)`);
+  console.log(`💬 [CHAT] Nova mensagem de ${senderName}`);
 
   try {
-    const senderName = messageData.userName || 'Alguém';
-    const senderId = messageData.userId;
-    const messageText = messageData.text || '';
-    const mentionedUserIds = messageData.mentions.map(m => m.userId);
-
-    console.log(`👥 Usuários mencionados: ${mentionedUserIds.join(', ')}`);
-
     const usersSnapshot = await admin.firestore()
       .collection('users')
-      .where(admin.firestore.FieldPath.documentId(), 'in', mentionedUserIds)
+      .where('approved', '==', true)
       .get();
 
     if (usersSnapshot.empty) {
-      console.log('⚠️ Nenhum usuário encontrado com os IDs mencionados');
+      console.log('⚠️ [CHAT] Nenhum usuário aprovado encontrado');
       return null;
     }
 
-    console.log(`✅ Encontrados ${usersSnapshot.size} usuário(s) no Firestore`);
-
-    const notificationPromises = [];
-    let successCount = 0;
-    let errorCount = 0;
+    const usersWithInstantPush = [];
+    const usersForBatch = [];
 
     usersSnapshot.forEach((userDoc) => {
       const userData = userDoc.data();
-      const fcmToken = userData.fcmToken;
       const userId = userDoc.id;
+      const prefs = userData.notificationPreferences || {};
 
       if (userId === senderId) {
-        console.log(`⚠️ Pulando ${userId} (não notificar a si mesmo)`);
         return;
       }
 
-      if (!fcmToken) {
-        console.log(`⚠️ Usuário ${userId} não tem FCM token registrado`);
-        errorCount++;
+      if (!userData.fcmToken) {
         return;
       }
 
-      console.log(`📤 Preparando notificação para ${userId} (${userData.displayName || 'sem nome'})`);
-
-      const truncatedText = messageText.length > 100
-        ? `${messageText.substring(0, 100)}...`
-        : messageText;
-
-      const notification = {
-        token: fcmToken,
-        notification: {
-          title: `💬 ${senderName} mencionou você`,
-          body: truncatedText,
-        },
-        data: {
-          type: 'mention',
-          messageId: messageId,
-          senderId: senderId,
-          senderName: senderName,
-          click_action: 'FLUTTER_NOTIFICATION_CLICK',
-        },
-        android: {
-          priority: 'high',
-          notification: {
-            sound: 'default',
-            channelId: 'chat_mentions',
-          },
-        },
-        apns: {
-          payload: {
-            aps: {
-              sound: 'default',
-              badge: 1,
-            },
-          },
-        },
-        webpush: {
-          notification: {
-            icon: '/icon.png',
-            badge: '/badge.png',
-          },
-        },
-      };
-
-      const promise = admin.messaging().send(notification)
-        .then((response) => {
-          console.log(`✅ Notificação enviada com sucesso para ${userId}: ${response}`);
-          successCount++;
-          return response;
-        })
-        .catch((error) => {
-          console.error(`❌ Erro ao enviar notificação para ${userId}:`, error);
-
-          if (error.code === 'messaging/invalid-registration-token' ||
-              error.code === 'messaging/registration-token-not-registered') {
-            console.log(`🗑️ Removendo FCM token inválido de ${userId}`);
-            return admin.firestore()
-              .collection('users')
-              .doc(userId)
-              .update({ fcmToken: admin.firestore.FieldValue.delete() });
-          }
-
-          errorCount++;
-          return null;
+      if (prefs.chatMessages === true) {
+        usersWithInstantPush.push({
+          id: userId,
+          fcmToken: userData.fcmToken,
+          displayName: userData.displayName,
+          email: userData.email,
         });
-
-      notificationPromises.push(promise);
+      } else {
+        usersForBatch.push(userId);
+      }
     });
 
-    await Promise.all(notificationPromises);
+    console.log(`💬 [CHAT] Usuários com chatMessages=true: ${usersWithInstantPush.length}`);
+    console.log(`💬 [CHAT] Usuários com chatMessages=false: ${usersForBatch.length} (vão para batch)`);
 
-    console.log(`✅ Processamento concluído: ${successCount} enviadas, ${errorCount} erros`);
+    if (usersWithInstantPush.length > 0) {
+      const notificationPromises = [];
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const user of usersWithInstantPush) {
+        const count = await incrementChatCounter(user.id);
+
+        console.log(`📱 [CHAT] Enviando push para ${user.email || user.id}`);
+        console.log(`📊 [CHAT] Count: ${count} mensagens não lidas`);
+
+        const titleText = count === 1
+          ? '1 nova mensagem no chat'
+          : `${count} novas mensagens no chat`;
+
+        console.log(`📊 [CHAT] Tag: chat_general`);
+        console.log(`📊 [CHAT] Título: ${titleText}`);
+
+        const message = {
+          token: user.fcmToken,
+          data: {
+            type: 'chat_grouped',
+            count: count.toString(),
+            title: titleText,
+            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+            timestamp: Date.now().toString(),
+          },
+          android: {
+            priority: 'high',
+            collapseKey: 'chat_general',
+          },
+          apns: {
+            payload: {
+              aps: {
+                badge: count,
+                sound: 'default',
+                threadId: 'chat_general',
+                'content-available': 1,
+              },
+            },
+            headers: {
+              'apns-priority': '10',
+              'apns-collapse-id': 'chat_general',
+            },
+          },
+          webpush: {
+            headers: {
+              Urgency: 'high',
+              TTL: '0',
+            },
+            data: {
+              type: 'chat_grouped',
+              count: count.toString(),
+              title: titleText,
+            },
+          },
+        };
+
+        const promise = admin.messaging().send(message)
+          .then((response) => {
+            console.log(`✅ [CHAT] Push enviado para ${user.id}, count=${count}`);
+            successCount++;
+            return response;
+          })
+          .catch((error) => {
+            console.error(`❌ [CHAT] Erro ao enviar push para ${user.id}:`, error.message);
+
+            if (error.code === 'messaging/invalid-registration-token' ||
+                error.code === 'messaging/registration-token-not-registered') {
+              console.log(`🗑️ [CHAT] Removendo FCM token inválido de ${user.id}`);
+              return admin.firestore()
+                .collection('users')
+                .doc(user.id)
+                .update({ fcmToken: admin.firestore.FieldValue.delete() });
+            }
+
+            errorCount++;
+            return null;
+          });
+
+        notificationPromises.push(promise);
+      }
+
+      await Promise.all(notificationPromises);
+      console.log(`✅ [CHAT] Push instantâneo: ${successCount} enviados, ${errorCount} erros`);
+    }
+
+    if (usersForBatch.length > 0) {
+      console.log(`⏳ [CHAT] ${usersForBatch.length} usuários adicionados ao batch (próximo em 15min)`);
+    }
+
+    if (messageData.mentions && messageData.mentions.length > 0) {
+      console.log(`📝 [CHAT] Mensagem tem ${messageData.mentions.length} menção(ões)`);
+      await sendMentionNotifications(messageId, messageData, senderId, senderName);
+    }
 
     return null;
 
   } catch (error) {
-    console.error('❌ Erro crítico ao processar menções:', error);
+    console.error('❌ [CHAT] Erro crítico ao processar mensagem:', error);
     return null;
   }
 });
+
+async function incrementChatCounter(userId) {
+  try {
+    const counterRef = admin.firestore()
+      .collection('users')
+      .doc(userId);
+
+    const result = await admin.firestore().runTransaction(async (transaction) => {
+      const userDoc = await transaction.get(counterRef);
+      const currentCount = userDoc.exists ? (userDoc.data().chatNotificationCount || 0) : 0;
+      const newCount = currentCount + 1;
+
+      transaction.update(counterRef, { chatNotificationCount: newCount });
+
+      return newCount;
+    });
+
+    console.log(`📊 [CHAT] Contador de ${userId}: ${result}`);
+    return result;
+  } catch (error) {
+    console.error(`❌ [CHAT] Erro ao incrementar contador: ${error.message}`);
+    return 1;
+  }
+}
+
+async function sendMentionNotifications(messageId, messageData, senderId, senderName) {
+  try {
+    const mentionedUserIds = messageData.mentions.map(m => m.userId);
+    const messageText = messageData.text || '';
+
+    if (mentionedUserIds.length === 0) return;
+
+    const batchSize = 10;
+    for (let i = 0; i < mentionedUserIds.length; i += batchSize) {
+      const batch = mentionedUserIds.slice(i, i + batchSize);
+
+      const usersSnapshot = await admin.firestore()
+        .collection('users')
+        .where(admin.firestore.FieldPath.documentId(), 'in', batch)
+        .get();
+
+      const notificationPromises = [];
+
+      usersSnapshot.forEach((userDoc) => {
+        const userData = userDoc.data();
+        const userId = userDoc.id;
+        const fcmToken = userData.fcmToken;
+
+        if (userId === senderId || !fcmToken) return;
+
+        const truncatedText = messageText.length > 100
+          ? `${messageText.substring(0, 100)}...`
+          : messageText;
+
+        const notification = {
+          token: fcmToken,
+          data: {
+            type: 'mention',
+            messageId: messageId,
+            senderId: senderId,
+            senderName: senderName,
+            notificationTitle: `💬 ${senderName} mencionou você`,
+            body: truncatedText,
+            click_action: 'FLUTTER_NOTIFICATION_CLICK',
+          },
+          android: {
+            priority: 'high',
+            notification: {
+              tag: `mention_${messageId}`,
+              sound: 'default',
+            },
+          },
+          apns: {
+            payload: {
+              aps: {
+                sound: 'default',
+              },
+            },
+          },
+          webpush: {
+            headers: {
+              Urgency: 'high',
+            },
+          },
+        };
+
+        const promise = admin.messaging().send(notification)
+          .then((response) => {
+            console.log(`✅ [MENTION] Notificação enviada para ${userId}`);
+            return response;
+          })
+          .catch((error) => {
+            console.error(`❌ [MENTION] Erro ao enviar para ${userId}:`, error.message);
+            if (error.code === 'messaging/invalid-registration-token' ||
+                error.code === 'messaging/registration-token-not-registered') {
+              return admin.firestore()
+                .collection('users')
+                .doc(userId)
+                .update({ fcmToken: admin.firestore.FieldValue.delete() });
+            }
+            return null;
+          });
+
+        notificationPromises.push(promise);
+      });
+
+      await Promise.all(notificationPromises);
+    }
+  } catch (error) {
+    console.error('❌ [MENTION] Erro ao processar menções:', error);
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 // FUNÇÕES DE PROXY PARA APIs EXTERNAS
 // ═══════════════════════════════════════════════════════════
 
 // CLOUD FUNCTION 1: NOTÍCIAS (Alpha Vantage)
-exports.getNews = onRequest({cors: true}, async (req, res) => {
+exports.getNews = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   try {
     console.log('📰 [getNews] Requisição recebida');
 
@@ -897,21 +1056,16 @@ exports.getNews = onRequest({cors: true}, async (req, res) => {
 
     console.log('🔑 [getNews] API Key disponível');
 
-    const url = `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=COIN,CRYPTO:BTC,FOREX:USD&apikey=${apiKey}&limit=10`;
+    const url = `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=COIN,CRYPTO:BTC,FOREX:USD&apikey=${apiKey}&limit=50`;
 
     console.log('🌐 [getNews] Fazendo requisição para Alpha Vantage...');
 
     const response = await axios.get(url, {
-      timeout: 10000,
+      timeout: 15000,
     });
 
     console.log('✅ [getNews] Resposta recebida:', response.status);
 
-    // LOG COMPLETO DA RESPOSTA
-    console.log('📄 [getNews] Response keys:', Object.keys(response.data));
-    console.log('📄 [getNews] Response completa (500 chars):', JSON.stringify(response.data).substring(0, 500));
-
-    // Verificar rate limit
     if (response.data.Information) {
       console.warn('⚠️ [getNews] Rate limit:', response.data.Information);
       return res.status(200).json({
@@ -920,7 +1074,6 @@ exports.getNews = onRequest({cors: true}, async (req, res) => {
       });
     }
 
-    // Verificar erro
     if (response.data['Error Message']) {
       console.error('❌ [getNews] Erro da API:', response.data['Error Message']);
       return res.status(200).json({
@@ -929,19 +1082,40 @@ exports.getNews = onRequest({cors: true}, async (req, res) => {
       });
     }
 
-    // Verificar feed
     if (response.data.feed && Array.isArray(response.data.feed)) {
-      console.log('📊 [getNews] Artigos encontrados:', response.data.feed.length);
+      console.log(`📰 [getNews] Total de artigos brutos: ${response.data.feed.length}`);
 
-      if (response.data.feed.length > 0) {
-        console.log('📋 [getNews] Primeiro artigo:', JSON.stringify(response.data.feed[0]).substring(0, 200));
-      }
+      const filteredFeed = response.data.feed
+        .filter(article => {
+          return article &&
+                 article.title &&
+                 article.title.trim() !== '' &&
+                 article.url &&
+                 article.url.trim() !== '';
+        })
+        .slice(0, 50)
+        .map(article => ({
+          title: article.title || 'Sem título',
+          summary: article.summary || 'Sem descrição disponível',
+          url: article.url || '',
+          source: article.source || 'Alpha Vantage',
+          time_published: article.time_published || new Date().toISOString(),
+          banner_image: article.banner_image || null,
+          overall_sentiment_label: article.overall_sentiment_label || 'Neutral',
+          overall_sentiment_score: article.overall_sentiment_score || 0,
+          topics: article.topics || [],
+          ticker_sentiment: article.ticker_sentiment || []
+        }));
 
-      return res.status(200).json(response.data);
+      console.log(`📰 [getNews] Artigos após filtro: ${filteredFeed.length}`);
+
+      return res.status(200).json({
+        ...response.data,
+        feed: filteredFeed,
+        items: filteredFeed.length
+      });
     } else {
       console.warn('⚠️ [getNews] Campo "feed" não encontrado ou não é array');
-      console.log('📋 [getNews] Campos disponíveis:', Object.keys(response.data));
-
       return res.status(200).json({
         ...response.data,
         feed: []
@@ -963,8 +1137,103 @@ exports.getNews = onRequest({cors: true}, async (req, res) => {
   }
 });
 
+exports.getForexNews = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
+  try {
+    console.log('📰 [getForexNews] Requisição recebida');
+
+    const ALPHA_VANTAGE_KEY = process.env.ALPHA_VANTAGE_API_KEY;
+
+    if (!ALPHA_VANTAGE_KEY) {
+      console.error('❌ [getForexNews] API Key não configurada');
+      return res.status(500).json({
+        success: false,
+        error: 'API Key não configurada'
+      });
+    }
+
+    const topics = 'forex,currency,fx_markets';
+    const apiUrl = `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&topics=${topics}&apikey=${ALPHA_VANTAGE_KEY}&limit=50`;
+
+    console.log('🔍 [getForexNews] Buscando notícias de Forex...');
+
+    const response = await fetch(apiUrl);
+
+    if (!response.ok) {
+      throw new Error(`Alpha Vantage API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (data.Note) {
+      console.log('⚠️ [getForexNews] Rate limit atingido');
+      return res.status(429).json({
+        success: false,
+        error: 'Rate limit atingido. Tente novamente em 1 minuto.',
+        message: data.Note
+      });
+    }
+
+    if (!data.feed || data.feed.length === 0) {
+      console.log('📭 [getForexNews] Nenhuma notícia encontrada');
+      return res.json({
+        success: true,
+        news: [],
+        count: 0
+      });
+    }
+
+    const forexNews = data.feed
+      .filter(article => {
+        const summary = (article.summary || '').toLowerCase();
+        const title = (article.title || '').toLowerCase();
+        const forexKeywords = ['forex', 'currency', 'exchange rate', 'fx', 'dollar', 'euro', 'pound', 'yen'];
+        return forexKeywords.some(keyword =>
+          title.includes(keyword) || summary.includes(keyword)
+        );
+      })
+      .slice(0, 20)
+      .map(article => ({
+        title: article.title || 'Sem título',
+        summary: article.summary || 'Sem descrição',
+        url: article.url || '',
+        source: article.source || 'Alpha Vantage',
+        publishedAt: article.time_published || new Date().toISOString(),
+        image: article.banner_image || null,
+        sentiment: article.overall_sentiment_label || 'Neutral',
+        sentimentScore: article.overall_sentiment_score || 0,
+        relevanceScore: article.relevance_score || 0,
+        topics: article.topics || []
+      }));
+
+    console.log(`✅ [getForexNews] ${forexNews.length} notícias de Forex retornadas`);
+
+    return res.json({
+      success: true,
+      news: forexNews,
+      count: forexNews.length,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ [getForexNews] Erro:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Erro ao buscar notícias de Forex',
+      message: error.message
+    });
+  }
+});
+
 // CLOUD FUNCTION 2: FOREX (FCS API)
-exports.getForex = onRequest({cors: true}, async (req, res) => {
+exports.getForex = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   try {
     console.log('💱 [getForex] Requisição recebida');
 
@@ -976,8 +1245,7 @@ exports.getForex = onRequest({cors: true}, async (req, res) => {
 
     console.log('🔑 [getForex] API Key disponível');
 
-    // Pares padrão de Forex
-    const pairs = 'EUR/USD,GBP/USD,USD/JPY,AUD/USD,USD/CAD,NZD/USD,EUR/GBP';
+    const pairs = 'EUR/USD,GBP/USD,USD/JPY,AUD/USD,USD/CAD,NZD/USD,EUR/GBP,EUR/JPY,GBP/JPY,CHF/JPY,EUR/CHF,GBP/CHF,AUD/JPY,NZD/JPY,EUR/AUD,GBP/AUD,EUR/CAD,GBP/CAD,AUD/CAD,USD/CHF';
 
     const url = `https://fcsapi.com/api-v3/forex/latest?symbol=${pairs}&access_key=${apiKey}`;
 
@@ -1001,7 +1269,11 @@ exports.getForex = onRequest({cors: true}, async (req, res) => {
 });
 
 // CLOUD FUNCTION 3: AÇÕES (Alpha Vantage)
-exports.getStocks = onRequest({cors: true}, async (req, res) => {
+exports.getStocks = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   try {
     console.log('📈 [getStocks] Requisição recebida');
 
@@ -1036,7 +1308,11 @@ exports.getStocks = onRequest({cors: true}, async (req, res) => {
 });
 
 // CLOUD FUNCTION 4: MÚLTIPLAS AÇÕES (Top 5)
-exports.getTopStocks = onRequest({cors: true}, async (req, res) => {
+exports.getTopStocks = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   try {
     console.log('📈 [getTopStocks] Requisição recebida');
 
@@ -1088,7 +1364,11 @@ exports.getTopStocks = onRequest({cors: true}, async (req, res) => {
 // ========================================
 // CLOUD FUNCTION 5: CALENDÁRIO ECONÔMICO (FCS API)
 // ========================================
-exports.getEconomicCalendar = onRequest({cors: true}, async (req, res) => {
+exports.getEconomicCalendar = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   try {
     console.log('📅 [getEconomicCalendar] Requisição recebida');
     console.log('📅 [getEconomicCalendar] Method:', req.method);
@@ -1297,7 +1577,7 @@ exports.updateMarketsCache = onSchedule({
         throw new Error('Finnhub API key not configured');
       }
 
-      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'JNJ'];
+      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'JNJ', 'NFLX', 'AMD', 'INTC', 'DIS', 'BA', 'MA', 'PYPL', 'SHOP', 'COIN', 'HOOD'];
       const stockNames = {
         'AAPL': 'Apple Inc.',
         'MSFT': 'Microsoft Corp.',
@@ -1309,6 +1589,16 @@ exports.updateMarketsCache = onSchedule({
         'JPM': 'JPMorgan Chase',
         'V': 'Visa Inc.',
         'JNJ': 'Johnson & Johnson',
+        'NFLX': 'Netflix Inc.',
+        'AMD': 'Advanced Micro Devices',
+        'INTC': 'Intel Corp.',
+        'DIS': 'Walt Disney Co.',
+        'BA': 'Boeing Co.',
+        'MA': 'Mastercard Inc.',
+        'PYPL': 'PayPal Holdings',
+        'SHOP': 'Shopify Inc.',
+        'COIN': 'Coinbase Global',
+        'HOOD': 'Robinhood Markets',
       };
 
       const stocksData = [];
@@ -1357,14 +1647,14 @@ exports.updateMarketsCache = onSchedule({
       console.log(`✅ Stocks: ${stocksData.length} ações salvas`);
     } catch (stocksError) {
       console.error('⚠️ Erro geral nos Stocks:', stocksError.message);
-      // Usar dados simulados como fallback
-      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA'];
+      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'JNJ', 'NFLX', 'AMD', 'INTC', 'DIS', 'BA', 'MA', 'PYPL', 'SHOP', 'COIN', 'HOOD'];
       const basePrices = {
-        'AAPL': 189.95, 'MSFT': 378.91, 'GOOGL': 141.80, 'AMZN': 178.25, 'NVDA': 495.22,
+        'AAPL': 189.95, 'MSFT': 378.91, 'GOOGL': 141.80, 'AMZN': 178.25, 'TSLA': 248.50, 'META': 505.75, 'NVDA': 495.22, 'JPM': 195.40, 'V': 275.80, 'JNJ': 155.20,
+        'NFLX': 485.30, 'AMD': 145.60, 'INTC': 45.80, 'DIS': 95.40, 'BA': 215.70, 'MA': 445.90, 'PYPL': 62.40, 'SHOP': 78.50, 'COIN': 255.30, 'HOOD': 18.90,
       };
       const stockNames = {
-        'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.',
-        'AMZN': 'Amazon.com Inc.', 'NVDA': 'NVIDIA Corp.',
+        'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.', 'AMZN': 'Amazon.com Inc.', 'TSLA': 'Tesla Inc.', 'META': 'Meta Platforms', 'NVDA': 'NVIDIA Corp.', 'JPM': 'JPMorgan Chase', 'V': 'Visa Inc.', 'JNJ': 'Johnson & Johnson',
+        'NFLX': 'Netflix Inc.', 'AMD': 'Advanced Micro Devices', 'INTC': 'Intel Corp.', 'DIS': 'Walt Disney Co.', 'BA': 'Boeing Co.', 'MA': 'Mastercard Inc.', 'PYPL': 'PayPal Holdings', 'SHOP': 'Shopify Inc.', 'COIN': 'Coinbase Global', 'HOOD': 'Robinhood Markets',
       };
 
       const stocksData = stockSymbols.map((symbol, index) => ({
@@ -1396,7 +1686,17 @@ exports.updateMarketsCache = onSchedule({
       if (forexResponse.data && forexResponse.data.rates) {
         const rates = forexResponse.data.rates;
 
+        // TODO: Implementar API real para commodities (XAU/USD, XAG/USD)
+        // Dados mockados removidos pois o mercado financeiro é muito volátil
+        // e preços desatualizados podem causar problemas.
+        // Sugestões de APIs: Finnhub, GoldAPI.io, MetalpriceAPI, Metals.live
+        // const commodities = [
+        //   { id: 'xauusd', symbol: 'XAU/USD', name: 'Gold / US Dollar', rate: 4189.00, flag: '🥇' },
+        //   { id: 'xagusd', symbol: 'XAG/USD', name: 'Silver / US Dollar', rate: 31.50, flag: '🥈' },
+        // ];
+
         const forexPairs = [
+          // ...commodities, // Descomentar quando implementar API de commodities
           {
             id: 'eurusd',
             symbol: 'EUR/USD',
@@ -1467,6 +1767,76 @@ exports.updateMarketsCache = onSchedule({
             rate: rates.CNY,
             flag: '🇨🇳'
           },
+          {
+            id: 'usdinr',
+            symbol: 'USD/INR',
+            name: 'US Dollar / Indian Rupee',
+            rate: rates.INR,
+            flag: '🇮🇳'
+          },
+          {
+            id: 'usdkrw',
+            symbol: 'USD/KRW',
+            name: 'US Dollar / South Korean Won',
+            rate: rates.KRW,
+            flag: '🇰🇷'
+          },
+          {
+            id: 'usdsgd',
+            symbol: 'USD/SGD',
+            name: 'US Dollar / Singapore Dollar',
+            rate: rates.SGD,
+            flag: '🇸🇬'
+          },
+          {
+            id: 'usdhkd',
+            symbol: 'USD/HKD',
+            name: 'US Dollar / Hong Kong Dollar',
+            rate: rates.HKD,
+            flag: '🇭🇰'
+          },
+          {
+            id: 'usdsek',
+            symbol: 'USD/SEK',
+            name: 'US Dollar / Swedish Krona',
+            rate: rates.SEK,
+            flag: '🇸🇪'
+          },
+          {
+            id: 'usdnok',
+            symbol: 'USD/NOK',
+            name: 'US Dollar / Norwegian Krone',
+            rate: rates.NOK,
+            flag: '🇳🇴'
+          },
+          {
+            id: 'usddkk',
+            symbol: 'USD/DKK',
+            name: 'US Dollar / Danish Krone',
+            rate: rates.DKK,
+            flag: '🇩🇰'
+          },
+          {
+            id: 'usdpln',
+            symbol: 'USD/PLN',
+            name: 'US Dollar / Polish Zloty',
+            rate: rates.PLN,
+            flag: '🇵🇱'
+          },
+          {
+            id: 'usdtry',
+            symbol: 'USD/TRY',
+            name: 'US Dollar / Turkish Lira',
+            rate: rates.TRY,
+            flag: '🇹🇷'
+          },
+          {
+            id: 'usdzar',
+            symbol: 'USD/ZAR',
+            name: 'US Dollar / South African Rand',
+            rate: rates.ZAR,
+            flag: '🇿🇦'
+          },
         ];
 
         const forexData = forexPairs.map((pair, index) => {
@@ -1500,6 +1870,10 @@ exports.updateMarketsCache = onSchedule({
 
       // Fallback com dados aproximados atuais
       const fallbackForex = [
+        // TODO: Commodities (XAU/USD, XAG/USD) - Implementar API real
+        // { id: 'xauusd', symbol: 'XAU/USD', name: 'Gold / US Dollar', current_price: 4189.00, price_change_percentage_24h: 0.35, flag: '🥇' },
+        // { id: 'xagusd', symbol: 'XAG/USD', name: 'Silver / US Dollar', current_price: 31.50, price_change_percentage_24h: 0.28, flag: '🥈' },
+        // Currency Pairs
         { id: 'eurusd', symbol: 'EUR/USD', name: 'Euro / US Dollar', current_price: 1.0520, price_change_percentage_24h: 0.12, flag: '🇪🇺' },
         { id: 'gbpusd', symbol: 'GBP/USD', name: 'British Pound / US Dollar', current_price: 1.2580, price_change_percentage_24h: -0.08, flag: '🇬🇧' },
         { id: 'usdjpy', symbol: 'USD/JPY', name: 'US Dollar / Japanese Yen', current_price: 154.50, price_change_percentage_24h: 0.25, flag: '🇯🇵' },
@@ -1510,6 +1884,16 @@ exports.updateMarketsCache = onSchedule({
         { id: 'usdmxn', symbol: 'USD/MXN', name: 'US Dollar / Mexican Peso', current_price: 20.35, price_change_percentage_24h: 0.32, flag: '🇲🇽' },
         { id: 'usdbrl', symbol: 'USD/BRL', name: 'US Dollar / Brazilian Real', current_price: 5.82, price_change_percentage_24h: -0.45, flag: '🇧🇷' },
         { id: 'usdcny', symbol: 'USD/CNY', name: 'US Dollar / Chinese Yuan', current_price: 7.25, price_change_percentage_24h: 0.08, flag: '🇨🇳' },
+        { id: 'usdinr', symbol: 'USD/INR', name: 'US Dollar / Indian Rupee', current_price: 84.05, price_change_percentage_24h: 0.15, flag: '🇮🇳' },
+        { id: 'usdkrw', symbol: 'USD/KRW', name: 'US Dollar / South Korean Won', current_price: 1385.50, price_change_percentage_24h: -0.18, flag: '🇰🇷' },
+        { id: 'usdsgd', symbol: 'USD/SGD', name: 'US Dollar / Singapore Dollar', current_price: 1.3450, price_change_percentage_24h: 0.08, flag: '🇸🇬' },
+        { id: 'usdhkd', symbol: 'USD/HKD', name: 'US Dollar / Hong Kong Dollar', current_price: 7.7850, price_change_percentage_24h: 0.02, flag: '🇭🇰' },
+        { id: 'usdsek', symbol: 'USD/SEK', name: 'US Dollar / Swedish Krona', current_price: 10.85, price_change_percentage_24h: -0.25, flag: '🇸🇪' },
+        { id: 'usdnok', symbol: 'USD/NOK', name: 'US Dollar / Norwegian Krone', current_price: 11.15, price_change_percentage_24h: 0.12, flag: '🇳🇴' },
+        { id: 'usddkk', symbol: 'USD/DKK', name: 'US Dollar / Danish Krone', current_price: 7.05, price_change_percentage_24h: -0.08, flag: '🇩🇰' },
+        { id: 'usdpln', symbol: 'USD/PLN', name: 'US Dollar / Polish Zloty', current_price: 4.05, price_change_percentage_24h: 0.22, flag: '🇵🇱' },
+        { id: 'usdtry', symbol: 'USD/TRY', name: 'US Dollar / Turkish Lira', current_price: 34.25, price_change_percentage_24h: 0.45, flag: '🇹🇷' },
+        { id: 'usdzar', symbol: 'USD/ZAR', name: 'US Dollar / South African Rand', current_price: 18.45, price_change_percentage_24h: -0.35, flag: '🇿🇦' },
       ];
 
       await db.collection('market_cache').doc('forex').set({
@@ -1609,16 +1993,14 @@ exports.updateMarketsCache = onSchedule({
       // Não falha a função inteira se o calendário falhar
     }
 
-    // ═══ 5. NOTÍCIAS (NewsAPI ou similar) ═══
     console.log('📰 Buscando notícias...');
     try {
-      // Usar NewsAPI para buscar notícias de crypto/finanças
       const newsResponse = await axios.get('https://newsapi.org/v2/everything', {
         params: {
           q: 'cryptocurrency OR bitcoin OR forex OR stocks',
           language: 'pt',
           sortBy: 'publishedAt',
-          pageSize: 20,
+          pageSize: 50,
           apiKey: 'e3c0c2fbb3414c999b76db49cc1cd150',
         },
         timeout: 15000,
@@ -1630,16 +2012,27 @@ exports.updateMarketsCache = onSchedule({
 
       let newsData = [];
       if (newsResponse.data && newsResponse.data.articles) {
-        newsData = newsResponse.data.articles.map((article, index) => ({
-          id: `news_${index}_${Date.now()}`,
-          title: article.title,
-          description: article.description,
-          url: article.url,
-          urlToImage: article.urlToImage,
-          publishedAt: article.publishedAt,
-          source: article.source?.name || 'Unknown',
-          author: article.author,
-        }));
+        newsData = newsResponse.data.articles
+          .filter(article => {
+            return article &&
+                   article.title &&
+                   article.title.trim() !== '' &&
+                   article.title !== '[Removed]' &&
+                   article.url &&
+                   article.url.trim() !== '';
+          })
+          .slice(0, 30)
+          .map((article, index) => ({
+            id: `news_${index}_${Date.now()}`,
+            title: article.title || 'Sem título',
+            description: article.description || 'Sem descrição',
+            url: article.url || '',
+            urlToImage: article.urlToImage || null,
+            publishedAt: article.publishedAt || new Date().toISOString(),
+            source: article.source?.name || 'Unknown',
+            author: article.author || 'Redação',
+          }));
+        console.log(`📰 [updateMarketsCache] Artigos brutos: ${newsResponse.data.articles.length}, após filtro: ${newsData.length}`);
       }
 
       // Se NewsAPI falhar, usar dados de exemplo
@@ -1699,7 +2092,11 @@ exports.updateMarketsCache = onSchedule({
  * refreshMarketsCache
  * Endpoint HTTP para forçar atualização manual do cache
  */
-exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
+exports.refreshMarketsCache = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   console.log('🔄 [refreshMarketsCache] Forçando atualização do cache...');
   const db = admin.firestore();
 
@@ -1737,11 +2134,10 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
     let stocksCount = 0;
     try {
       const finnhubApiKey = process.env.FINNHUB_API_KEY || process.env.TRADING_ECONOMICS_KEY;
-      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'JNJ'];
+      const stockSymbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'JPM', 'V', 'JNJ', 'NFLX', 'AMD', 'INTC', 'DIS', 'BA', 'MA', 'PYPL', 'SHOP', 'COIN', 'HOOD'];
       const stockNames = {
-        'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.',
-        'AMZN': 'Amazon.com Inc.', 'TSLA': 'Tesla Inc.', 'META': 'Meta Platforms',
-        'NVDA': 'NVIDIA Corp.', 'JPM': 'JPMorgan Chase', 'V': 'Visa Inc.', 'JNJ': 'Johnson & Johnson',
+        'AAPL': 'Apple Inc.', 'MSFT': 'Microsoft Corp.', 'GOOGL': 'Alphabet Inc.', 'AMZN': 'Amazon.com Inc.', 'TSLA': 'Tesla Inc.', 'META': 'Meta Platforms', 'NVDA': 'NVIDIA Corp.', 'JPM': 'JPMorgan Chase', 'V': 'Visa Inc.', 'JNJ': 'Johnson & Johnson',
+        'NFLX': 'Netflix Inc.', 'AMD': 'Advanced Micro Devices', 'INTC': 'Intel Corp.', 'DIS': 'Walt Disney Co.', 'BA': 'Boeing Co.', 'MA': 'Mastercard Inc.', 'PYPL': 'PayPal Holdings', 'SHOP': 'Shopify Inc.', 'COIN': 'Coinbase Global', 'HOOD': 'Robinhood Markets',
       };
 
       const stocksData = [];
@@ -1783,6 +2179,7 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
     }
 
     // ═══ 3. FOREX (ExchangeRate-API - Gratuita, Sem Cadastro) ═══
+    let forexCount = 0;
     try {
       const forexResponse = await axios.get('https://api.exchangerate-api.com/v4/latest/USD', {
         timeout: 10000,
@@ -1791,7 +2188,17 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
       if (forexResponse.data && forexResponse.data.rates) {
         const rates = forexResponse.data.rates;
 
+        // TODO: Implementar API real para commodities (XAU/USD, XAG/USD)
+        // Dados mockados removidos pois o mercado financeiro é muito volátil
+        // e preços desatualizados podem causar problemas.
+        // Sugestões de APIs: Finnhub, GoldAPI.io, MetalpriceAPI, Metals.live
+        // const commodities = [
+        //   { id: 'xauusd', symbol: 'XAU/USD', name: 'Gold / US Dollar', rate: 4189.00, flag: '🥇' },
+        //   { id: 'xagusd', symbol: 'XAG/USD', name: 'Silver / US Dollar', rate: 31.50, flag: '🥈' },
+        // ];
+
         const forexPairs = [
+          // ...commodities, // Descomentar quando implementar API de commodities
           {
             id: 'eurusd',
             symbol: 'EUR/USD',
@@ -1862,6 +2269,76 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
             rate: rates.CNY,
             flag: '🇨🇳'
           },
+          {
+            id: 'usdinr',
+            symbol: 'USD/INR',
+            name: 'US Dollar / Indian Rupee',
+            rate: rates.INR,
+            flag: '🇮🇳'
+          },
+          {
+            id: 'usdkrw',
+            symbol: 'USD/KRW',
+            name: 'US Dollar / South Korean Won',
+            rate: rates.KRW,
+            flag: '🇰🇷'
+          },
+          {
+            id: 'usdsgd',
+            symbol: 'USD/SGD',
+            name: 'US Dollar / Singapore Dollar',
+            rate: rates.SGD,
+            flag: '🇸🇬'
+          },
+          {
+            id: 'usdhkd',
+            symbol: 'USD/HKD',
+            name: 'US Dollar / Hong Kong Dollar',
+            rate: rates.HKD,
+            flag: '🇭🇰'
+          },
+          {
+            id: 'usdsek',
+            symbol: 'USD/SEK',
+            name: 'US Dollar / Swedish Krona',
+            rate: rates.SEK,
+            flag: '🇸🇪'
+          },
+          {
+            id: 'usdnok',
+            symbol: 'USD/NOK',
+            name: 'US Dollar / Norwegian Krone',
+            rate: rates.NOK,
+            flag: '🇳🇴'
+          },
+          {
+            id: 'usddkk',
+            symbol: 'USD/DKK',
+            name: 'US Dollar / Danish Krone',
+            rate: rates.DKK,
+            flag: '🇩🇰'
+          },
+          {
+            id: 'usdpln',
+            symbol: 'USD/PLN',
+            name: 'US Dollar / Polish Zloty',
+            rate: rates.PLN,
+            flag: '🇵🇱'
+          },
+          {
+            id: 'usdtry',
+            symbol: 'USD/TRY',
+            name: 'US Dollar / Turkish Lira',
+            rate: rates.TRY,
+            flag: '🇹🇷'
+          },
+          {
+            id: 'usdzar',
+            symbol: 'USD/ZAR',
+            name: 'US Dollar / South African Rand',
+            rate: rates.ZAR,
+            flag: '🇿🇦'
+          },
         ];
 
         const forexData = forexPairs.map((pair, index) => {
@@ -1887,6 +2364,7 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           source: 'exchangerate-api',
         });
+        forexCount = forexData.length;
       }
     } catch (forexError) {
       console.error('⚠️ Erro no forex:', forexError.message);
@@ -2022,7 +2500,7 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
       message: 'Cache atualizado com sucesso',
       crypto: cryptoCount,
       stocks: stocksCount,
-      forex: 10,
+      forex: forexCount,
       calendar: calendarCount,
       news: newsCount,
     });
@@ -2041,7 +2519,11 @@ exports.refreshMarketsCache = onRequest({cors: true}, async (req, res) => {
  * Retorna dados globais do mercado cripto via CoinGecko API
  * Endpoint: https://api.coingecko.com/api/v3/global
  */
-exports.getGlobalCryptoData = onRequest({cors: true}, async (req, res) => {
+exports.getGlobalCryptoData = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   try {
     console.log('📊 [getGlobalCryptoData] Buscando dados globais da CoinGecko...');
 
@@ -2080,7 +2562,11 @@ exports.getGlobalCryptoData = onRequest({cors: true}, async (req, res) => {
  * Endpoint: https://api.coingecko.com/api/v3/coins/markets
  * Query params: per_page (default: 100), page (default: 1)
  */
-exports.getCryptoMarkets = onRequest({cors: true}, async (req, res) => {
+exports.getCryptoMarkets = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   try {
     const perPage = req.query.per_page || 100;
     const page = req.query.page || 1;
@@ -2130,7 +2616,11 @@ exports.getCryptoMarkets = onRequest({cors: true}, async (req, res) => {
  * Endpoint: https://api.coingecko.com/api/v3/search
  * Query param obrigatório: q (termo de busca)
  */
-exports.searchCrypto = onRequest({cors: true}, async (req, res) => {
+exports.searchCrypto = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   try {
     const query = req.query.q || '';
 
@@ -2185,39 +2675,66 @@ exports.searchCrypto = onRequest({cors: true}, async (req, res) => {
  * Retorna dados das principais ações via Alpha Vantage API
  * Top 10 ações: AAPL, MSFT, GOOGL, AMZN, TSLA, META, NVDA, NFLX, AMD, INTC
  */
-exports.getStocksData = onRequest({cors: true}, async (req, res) => {
+exports.getStocksData = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   try {
     console.log('📈 [getStocksData] Buscando dados de ações via Twelve Data...');
 
     const apiKey = '4be61c2528dd4e1a8ad18e41abfe92ea';
-    const symbols = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK.B', 'JPM', 'V'];
+    const symbols = [
+      'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA',
+      'META', 'NVDA', 'NFLX', 'AMD', 'INTC',
+      'DIS', 'BA', 'JPM', 'V', 'MA',
+      'PYPL', 'SHOP', 'SQ', 'COIN', 'HOOD'
+    ];
 
-    // Nomes das empresas para exibição
     const companyNames = {
       'AAPL': 'Apple Inc.',
       'MSFT': 'Microsoft Corp.',
       'GOOGL': 'Alphabet Inc.',
       'AMZN': 'Amazon.com Inc.',
-      'NVDA': 'NVIDIA Corp.',
-      'META': 'Meta Platforms',
       'TSLA': 'Tesla Inc.',
-      'BRK.B': 'Berkshire Hathaway',
+      'META': 'Meta Platforms',
+      'NVDA': 'NVIDIA Corp.',
+      'NFLX': 'Netflix Inc.',
+      'AMD': 'AMD Inc.',
+      'INTC': 'Intel Corp.',
+      'DIS': 'Walt Disney Co.',
+      'BA': 'Boeing Co.',
       'JPM': 'JPMorgan Chase',
       'V': 'Visa Inc.',
+      'MA': 'Mastercard Inc.',
+      'PYPL': 'PayPal Holdings',
+      'SHOP': 'Shopify Inc.',
+      'SQ': 'Block Inc.',
+      'COIN': 'Coinbase Global',
+      'HOOD': 'Robinhood Markets',
     };
 
-    // Market caps aproximados (em bilhões) - atualizados periodicamente
     const marketCaps = {
       'AAPL': 2950000000000,
       'MSFT': 2810000000000,
       'GOOGL': 1780000000000,
       'AMZN': 1850000000000,
-      'NVDA': 1220000000000,
-      'META': 1290000000000,
       'TSLA': 758000000000,
-      'BRK.B': 785000000000,
+      'META': 1290000000000,
+      'NVDA': 1220000000000,
+      'NFLX': 265000000000,
+      'AMD': 230000000000,
+      'INTC': 185000000000,
+      'DIS': 165000000000,
+      'BA': 125000000000,
       'JPM': 565000000000,
       'V': 575000000000,
+      'MA': 425000000000,
+      'PYPL': 68000000000,
+      'SHOP': 95000000000,
+      'SQ': 45000000000,
+      'COIN': 38000000000,
+      'HOOD': 12000000000,
     };
 
     // Buscar preços atuais e variação - usando batch request
@@ -2282,12 +2799,11 @@ exports.getStocksData = onRequest({cors: true}, async (req, res) => {
 // FUNÇÕES DE API DE FOREX
 // ═══════════════════════════════════════════════════════════
 
-/**
- * getForexData
- * Retorna dados dos principais pares de moedas Forex
- * Top 10 pares: EUR/USD, GBP/USD, USD/JPY, USD/CHF, AUD/USD, USD/CAD, NZD/USD, EUR/GBP, EUR/JPY, GBP/JPY
- */
-exports.getForexData = onRequest({cors: true}, async (req, res) => {
+exports.getForexData = onRequest({
+  cors: true,
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
   try {
     console.log('💱 [getForexData] Buscando dados de Forex...');
 
@@ -2302,6 +2818,16 @@ exports.getForexData = onRequest({cors: true}, async (req, res) => {
       { from: 'EUR', to: 'GBP', name: 'EUR/GBP' },
       { from: 'EUR', to: 'JPY', name: 'EUR/JPY' },
       { from: 'GBP', to: 'JPY', name: 'GBP/JPY' },
+      { from: 'EUR', to: 'CHF', name: 'EUR/CHF' },
+      { from: 'GBP', to: 'CHF', name: 'GBP/CHF' },
+      { from: 'AUD', to: 'JPY', name: 'AUD/JPY' },
+      { from: 'NZD', to: 'JPY', name: 'NZD/JPY' },
+      { from: 'EUR', to: 'AUD', name: 'EUR/AUD' },
+      { from: 'GBP', to: 'AUD', name: 'GBP/AUD' },
+      { from: 'EUR', to: 'CAD', name: 'EUR/CAD' },
+      { from: 'GBP', to: 'CAD', name: 'GBP/CAD' },
+      { from: 'AUD', to: 'CAD', name: 'AUD/CAD' },
+      { from: 'CHF', to: 'JPY', name: 'CHF/JPY' },
     ];
 
     // Gerar dados simulados (pode ser substituído por API real posteriormente)
@@ -2333,467 +2859,13 @@ exports.getForexData = onRequest({cors: true}, async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════
-// FUNÇÕES DE NOTIFICAÇÃO POR EMAIL - SINAIS
-// ═══════════════════════════════════════════════════════════
-
-// Enviar notificação de sinal por email (chamada manual)
-exports.sendSignalNotificationEmail = onCall(async (request) => {
-  try {
-    const { signal } = request.data;
-
-    if (!signal) {
-      throw new Error('Signal data is required');
-    }
-
-    const usersSnapshot = await admin.firestore().collection('users')
-      .where('emailNotifications', '==', true)
-      .get();
-
-    if (usersSnapshot.empty) {
-      console.log('Nenhum usuário com notificações por email ativadas');
-      return { success: true, emailsSent: 0 };
-    }
-
-    const emails = usersSnapshot.docs
-      .map(doc => doc.data().email)
-      .filter(email => email);
-
-    if (emails.length === 0) {
-      return { success: true, emailsSent: 0 };
-    }
-
-    const signalType = signal.type === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
-    const targets = signal.targets ? signal.targets.join(' → ') : '-';
-
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body { font-family: Arial, sans-serif; background-color: #0f1419; color: #ffffff; padding: 20px; }
-          .container { max-width: 600px; margin: 0 auto; background-color: #1a1f26; border-radius: 12px; padding: 24px; }
-          .header { text-align: center; margin-bottom: 24px; }
-          .logo { color: #00ff88; font-size: 24px; font-weight: bold; }
-          .signal-card { background-color: #0f1419; border-radius: 8px; padding: 16px; margin: 16px 0; }
-          .signal-type { font-size: 20px; font-weight: bold; margin-bottom: 12px; }
-          .signal-type.long { color: #00ff88; }
-          .signal-type.short { color: #ff4444; }
-          .row { display: flex; justify-content: space-between; margin: 8px 0; }
-          .label { color: #888; }
-          .value { color: #fff; font-weight: 500; }
-          .footer { text-align: center; margin-top: 24px; color: #666; font-size: 12px; }
-          .button { display: inline-block; background-color: #00ff88; color: #000; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 16px; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <div class="logo">AlanoCryptoFX</div>
-            <p>Novo Sinal de Trading</p>
-          </div>
-
-          <div class="signal-card">
-            <div class="signal-type ${signal.type === 'LONG' ? 'long' : 'short'}">
-              ${signalType} - ${signal.coin || signal.symbol || 'N/A'}
-            </div>
-
-            <div class="row">
-              <span class="label">Entrada:</span>
-              <span class="value">${signal.entry || '-'}</span>
-            </div>
-
-            <div class="row">
-              <span class="label">Alvos:</span>
-              <span class="value">${targets}</span>
-            </div>
-
-            <div class="row">
-              <span class="label">Stop Loss:</span>
-              <span class="value">${signal.stopLoss || '-'}</span>
-            </div>
-
-            <div class="row">
-              <span class="label">Confiança:</span>
-              <span class="value">${signal.confidence || '-'}%</span>
-            </div>
-          </div>
-
-          <center>
-            <a href="https://alanocryptofx.com.br" class="button">Abrir App</a>
-          </center>
-
-          <div class="footer">
-            <p>Você está recebendo este email porque ativou as notificações por email.</p>
-            <p>© 2025 AlanoCryptoFX. Todos os direitos reservados.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-
-    const { data: emailData, error } = await resend.emails.send({
-      from: EMAIL_FROM,
-      to: emails,
-      subject: `${signalType} - ${signal.coin || signal.symbol || 'Novo Sinal'}`,
-      html: htmlContent,
-    });
-
-    if (error) {
-      console.error('Erro ao enviar email:', error);
-      throw new Error('Failed to send email');
-    }
-
-    console.log(`✅ Emails enviados para ${emails.length} usuários`);
-
-    return { success: true, emailsSent: emails.length };
-  } catch (error) {
-    console.error('Erro na função sendSignalNotificationEmail:', error);
-    throw new Error(error.message);
-  }
-});
-
-// Trigger automático quando novo sinal é criado
-exports.onNewSignalCreated = onDocumentCreated('signals/{signalId}', async (event) => {
-  try {
-    const signal = event.data.data();
-
-    console.log('📊 Novo sinal criado:', signal);
-
-    const usersSnapshot = await admin.firestore().collection('users')
-      .where('emailNotifications', '==', true)
-      .get();
-
-    if (usersSnapshot.empty) {
-      console.log('Nenhum usuário com notificações por email');
-      return null;
-    }
-
-    const emails = usersSnapshot.docs
-      .map(doc => doc.data().email)
-      .filter(email => email);
-
-    if (emails.length === 0) {
-      console.log('Nenhum email válido encontrado');
-      return null;
-    }
-
-    const signalType = signal.type === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
-    const targets = signal.targets ? signal.targets.join(' → ') : '-';
-
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <style>
-          body { font-family: Arial, sans-serif; background-color: #0f1419; color: #ffffff; padding: 20px; }
-          .container { max-width: 600px; margin: 0 auto; background-color: #1a1f26; border-radius: 12px; padding: 24px; }
-          .header { text-align: center; margin-bottom: 24px; }
-          .logo { color: #00ff88; font-size: 24px; font-weight: bold; }
-          .signal-card { background-color: #0f1419; border-radius: 8px; padding: 16px; margin: 16px 0; }
-          .signal-type { font-size: 20px; font-weight: bold; margin-bottom: 12px; }
-          .signal-type.long { color: #00ff88; }
-          .signal-type.short { color: #ff4444; }
-          .row { display: flex; justify-content: space-between; margin: 8px 0; }
-          .label { color: #888; }
-          .value { color: #fff; font-weight: 500; }
-          .footer { text-align: center; margin-top: 24px; color: #666; font-size: 12px; }
-          .button { display: inline-block; background-color: #00ff88; color: #000; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; margin-top: 16px; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <div class="logo">AlanoCryptoFX</div>
-            <p>Novo Sinal de Trading</p>
-          </div>
-
-          <div class="signal-card">
-            <div class="signal-type ${signal.type === 'LONG' ? 'long' : 'short'}">
-              ${signalType} - ${signal.coin || signal.symbol || 'N/A'}
-            </div>
-
-            <div class="row">
-              <span class="label">Entrada:</span>
-              <span class="value">${signal.entry || '-'}</span>
-            </div>
-
-            <div class="row">
-              <span class="label">Alvos:</span>
-              <span class="value">${targets}</span>
-            </div>
-
-            <div class="row">
-              <span class="label">Stop Loss:</span>
-              <span class="value">${signal.stopLoss || '-'}</span>
-            </div>
-
-            <div class="row">
-              <span class="label">Confiança:</span>
-              <span class="value">${signal.confidence || '-'}%</span>
-            </div>
-          </div>
-
-          <center>
-            <a href="https://alanocryptofx.com.br" class="button">Abrir App</a>
-          </center>
-
-          <div class="footer">
-            <p>Você está recebendo este email porque ativou as notificações por email.</p>
-            <p>© 2025 AlanoCryptoFX. Todos os direitos reservados.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-
-    const { error } = await resend.emails.send({
-      from: EMAIL_FROM,
-      to: emails,
-      subject: `${signalType} - ${signal.coin || signal.symbol || 'Novo Sinal'}`,
-      html: htmlContent,
-    });
-
-    if (error) {
-      console.error('❌ Erro ao enviar emails:', error);
-      return null;
-    }
-
-    console.log(`✅ Emails enviados para ${emails.length} usuários`);
-    return null;
-  } catch (error) {
-    console.error('❌ Erro no trigger onNewSignalCreated:', error);
-    return null;
-  }
-});
-
-// Função para enviar email de teste
-exports.sendTestEmail = onRequest({cors: true}, async (req, res) => {
-  try {
-    const testEmail = req.query.email || 'suporte@alanocryptofx.com.br';
-
-    const { data, error } = await resend.emails.send({
-      from: EMAIL_FROM,
-      to: testEmail,
-      subject: '✅ Teste de Email - AlanoCryptoFX',
-      html: `
-        <div style="font-family: Arial; background: #0f1419; color: #fff; padding: 40px; text-align: center;">
-          <h1 style="color: #00ff88;">AlanoCryptoFX</h1>
-          <p>Este é um email de teste.</p>
-          <p>Se você recebeu este email, a configuração está funcionando!</p>
-          <p style="color: #888; margin-top: 30px;">© 2025 AlanoCryptoFX</p>
-        </div>
-      `,
-    });
-
-    if (error) {
-      console.error('Erro:', error);
-      return res.status(500).json({ success: false, error });
-    }
-
-    console.log('✅ Email de teste enviado para:', testEmail);
-    return res.json({ success: true, message: `Email enviado para ${testEmail}` });
-  } catch (error) {
-    console.error('Erro:', error);
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TRIGGER DE EMAIL PARA NOVOS POSTS DO ALANO
-// Envia email para usuários quando novo post é criado
-// NÃO MEXE em notificações push - apenas email separado
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Função auxiliar para extrair ID do YouTube
-function extractYouTubeId(url) {
-  if (!url) return null;
-  try {
-    const urlObj = new URL(url);
-    if (urlObj.hostname.includes('youtube.com')) {
-      return urlObj.searchParams.get('v') || null;
-    } else if (urlObj.hostname.includes('youtu.be')) {
-      return urlObj.pathname.slice(1) || null;
-    }
-    return null;
-  } catch (e) {
-    return null;
-  }
-}
-
-// Trigger automático quando novo post do Alano é criado
-exports.onNewAlanoPostEmailTrigger = onDocumentCreated('alano_posts/{postId}', async (event) => {
-  try {
-    const post = event.data.data();
-    const postId = event.params.postId;
-
-    console.log('📰 [EMAIL] Novo post do Alano criado:', post.title);
-
-    const usersSnapshot = await admin.firestore().collection('users')
-      .where('emailNotifications', '==', true)
-      .get();
-
-    if (usersSnapshot.empty) {
-      console.log('Nenhum usuário com notificações por email');
-      return null;
-    }
-
-    const emails = usersSnapshot.docs
-      .map(doc => doc.data().email)
-      .filter(email => email);
-
-    if (emails.length === 0) {
-      console.log('Nenhum email válido encontrado');
-      return null;
-    }
-
-    // Extrair video ID se tiver
-    const videoId = extractYouTubeId(post.videoUrl);
-    const thumbnailUrl = post.imageUrl || post.thumbnailUrl ||
-      (videoId ? `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg` : null);
-
-    // Preparar conteúdo do post (limitar a 300 caracteres)
-    const contentPreview = post.content
-      ? post.content.substring(0, 300) + (post.content.length > 300 ? '...' : '')
-      : '';
-
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            background-color: #0f1419;
-            color: #ffffff;
-            padding: 20px;
-            margin: 0;
-          }
-          .container {
-            max-width: 600px;
-            margin: 0 auto;
-            background-color: #1a1f26;
-            border-radius: 12px;
-            padding: 24px;
-          }
-          .header {
-            text-align: center;
-            margin-bottom: 24px;
-          }
-          .logo {
-            color: #00ff88;
-            font-size: 24px;
-            font-weight: bold;
-            margin-bottom: 8px;
-          }
-          .subtitle {
-            color: #888;
-            font-size: 14px;
-          }
-          .post-card {
-            background-color: #0f1419;
-            border-radius: 8px;
-            padding: 16px;
-            margin: 16px 0;
-          }
-          .post-title {
-            font-size: 20px;
-            font-weight: bold;
-            color: #fff;
-            margin-bottom: 12px;
-          }
-          .post-content {
-            color: #ccc;
-            line-height: 1.6;
-            margin-bottom: 16px;
-            white-space: pre-wrap;
-          }
-          .thumbnail {
-            width: 100%;
-            max-width: 100%;
-            border-radius: 8px;
-            margin-bottom: 12px;
-          }
-          .video-badge {
-            color: #00ff88;
-            font-size: 14px;
-            margin-top: 12px;
-          }
-          .button {
-            display: inline-block;
-            background-color: #00ff88;
-            color: #000;
-            padding: 12px 24px;
-            border-radius: 8px;
-            text-decoration: none;
-            font-weight: bold;
-            margin-top: 16px;
-          }
-          .footer {
-            text-align: center;
-            margin-top: 24px;
-            color: #666;
-            font-size: 12px;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <div class="logo">AlanoCryptoFX</div>
-            <div class="subtitle">📰 Novo Conteúdo Exclusivo</div>
-          </div>
-
-          <div class="post-card">
-            <div class="post-title">${post.title || 'Novo Post'}</div>
-
-            ${thumbnailUrl ? `<img src="${thumbnailUrl}" alt="Thumbnail" class="thumbnail" />` : ''}
-
-            ${contentPreview ? `<div class="post-content">${contentPreview}</div>` : ''}
-
-            ${post.videoUrl ? `<p class="video-badge">🎥 Vídeo disponível no app</p>` : ''}
-          </div>
-
-          <center>
-            <a href="https://alanocryptofx.com.br" class="button">Abrir no App</a>
-          </center>
-
-          <div class="footer">
-            <p>Você está recebendo este email porque ativou as notificações por email.</p>
-            <p>Para desativar, acesse as configurações do seu perfil no app.</p>
-            <p style="margin-top: 16px;">© 2025 AlanoCryptoFX. Todos os direitos reservados.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-
-    const { error } = await resend.emails.send({
-      from: EMAIL_FROM,
-      to: emails,
-      subject: `📰 Novo Post: ${post.title || 'Conteúdo Exclusivo'}`,
-      html: htmlContent,
-    });
-
-    if (error) {
-      console.error('❌ Erro ao enviar emails de post:', error);
-      return null;
-    }
-
-    console.log(`✅ [EMAIL] Emails de post enviados para ${emails.length} usuários`);
-    return null;
-  } catch (error) {
-    console.error('❌ Erro no trigger onNewAlanoPostEmailTrigger:', error);
-    return null;
-  }
-});
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // RECUPERAÇÃO DE SENHA - Enviar código por email
 // ═══════════════════════════════════════════════════════════════════════════════
-exports.sendPasswordResetCode = onCall(async (request) => {
+exports.sendPasswordResetCode = onCall({
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (request) => {
   console.log('🔐 [sendPasswordResetCode] Iniciando...');
 
   try {
@@ -2981,7 +3053,10 @@ exports.sendPasswordResetCode = onCall(async (request) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // RECUPERAÇÃO DE SENHA - Verificar código e resetar senha
 // ═══════════════════════════════════════════════════════════════════════════════
-exports.verifyPasswordResetCode = onCall(async (request) => {
+exports.verifyPasswordResetCode = onCall({
+  memory: '128MiB',
+  timeoutSeconds: 60
+}, async (request) => {
   console.log('🔑 [verifyPasswordResetCode] Iniciando...');
 
   try {
@@ -3064,5 +3139,552 @@ exports.verifyPasswordResetCode = onCall(async (request) => {
   } catch (error) {
     console.error('❌ Erro em verifyPasswordResetCode:', error);
     throw error;
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// FUNÇÕES DE THROTTLING PARA CHAT MESSAGES
+// ═══════════════════════════════════════════════════════════
+
+async function checkRateLimit(userId, maxPerHour = 4) {
+  try {
+    const now = admin.firestore.Timestamp.now();
+    const oneHourAgo = admin.firestore.Timestamp.fromMillis(
+      now.toMillis() - (60 * 60 * 1000)
+    );
+
+    const userDoc = await admin.firestore()
+      .collection('users')
+      .doc(userId)
+      .get();
+
+    if (!userDoc.exists) return false;
+
+    const userData = userDoc.data();
+    const notificationCount = userData.notificationCount || {};
+    const lastHourCount = notificationCount.lastHour || 0;
+    const lastUpdate = notificationCount.lastUpdate;
+
+    if (lastUpdate && lastUpdate.toMillis() < oneHourAgo.toMillis()) {
+      await admin.firestore().collection('users').doc(userId).update({
+        'notificationCount.lastHour': 0,
+        'notificationCount.lastUpdate': now,
+      });
+      return true;
+    }
+
+    if (lastHourCount >= maxPerHour) {
+      console.log(`⚠️ Rate limit atingido para usuário ${userId}: ${lastHourCount}/${maxPerHour}`);
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error(`❌ Erro ao verificar rate limit: ${error}`);
+    return false;
+  }
+}
+
+async function incrementRateLimitCounter(userId) {
+  try {
+    const now = admin.firestore.Timestamp.now();
+
+    await admin.firestore().collection('users').doc(userId).update({
+      'notificationCount.lastHour': admin.firestore.FieldValue.increment(1),
+      'notificationCount.lastUpdate': now,
+      'notificationCount.today': admin.firestore.FieldValue.increment(1),
+    });
+  } catch (error) {
+    console.error(`❌ Erro ao incrementar contador: ${error}`);
+  }
+}
+
+exports.sendBatchedChatNotifications = onSchedule({
+  schedule: 'every 15 minutes',
+  timeZone: 'America/Sao_Paulo',
+  retryCount: 2,
+}, async (event) => {
+  console.log('🔄 Iniciando envio de notificações de chat em lote...');
+
+  try {
+    const now = admin.firestore.Timestamp.now();
+    const fifteenMinAgo = admin.firestore.Timestamp.fromMillis(
+      now.toMillis() - (15 * 60 * 1000)
+    );
+
+    const messagesSnapshot = await admin.firestore()
+      .collection('chat_messages')
+      .where('createdAt', '>=', fifteenMinAgo)
+      .where('notificationSent', '==', false)
+      .orderBy('createdAt', 'desc')
+      .limit(100)
+      .get();
+
+    if (messagesSnapshot.empty) {
+      console.log('⚠️ Nenhuma mensagem nova para notificar');
+      return null;
+    }
+
+    console.log(`📊 ${messagesSnapshot.size} mensagens novas encontradas`);
+
+    const usersSnapshot = await admin.firestore()
+      .collection('users')
+      .where('approved', '==', true)
+      .get();
+
+    if (usersSnapshot.empty) {
+      console.log('⚠️ Nenhum usuário aprovado encontrado');
+      return null;
+    }
+
+    const userPrefs = {};
+    usersSnapshot.forEach(doc => {
+      const userData = doc.data();
+      const prefs = userData.notificationPreferences || {};
+
+      if (prefs.chatMessages === true && userData.fcmToken) {
+        userPrefs[doc.id] = {
+          fcmToken: userData.fcmToken,
+          displayName: userData.displayName,
+        };
+      }
+    });
+
+    const usersToNotify = Object.keys(userPrefs);
+    console.log(`👥 ${usersToNotify.length} usuários com notificações de chat ativas`);
+
+    if (usersToNotify.length === 0) {
+      const batch = admin.firestore().batch();
+      messagesSnapshot.forEach(doc => {
+        batch.update(doc.ref, { notificationSent: true });
+      });
+      await batch.commit();
+      return null;
+    }
+
+    const messageCount = messagesSnapshot.size;
+    const notificationPromises = [];
+
+    for (const userId of usersToNotify) {
+      const canSend = await checkRateLimit(userId, 4);
+
+      if (!canSend) {
+        console.log(`⏸️ Pulando ${userId} - rate limit atingido`);
+        continue;
+      }
+
+      const userInfo = userPrefs[userId];
+      const message = {
+        token: userInfo.fcmToken,
+        notification: {
+          title: '💬 AlanoCryptoFX',
+          body: messageCount === 1
+            ? '1 nova mensagem no chat'
+            : `${messageCount} novas mensagens no chat`,
+        },
+        data: {
+          type: 'chat_batch',
+          messageCount: messageCount.toString(),
+          click_action: 'FLUTTER_NOTIFICATION_CLICK',
+        },
+        android: {
+          priority: 'high',
+          notification: {
+            sound: 'default',
+            channelId: 'chat_messages',
+          },
+        },
+        apns: {
+          payload: {
+            aps: {
+              sound: 'default',
+              badge: messageCount,
+            },
+          },
+        },
+        webpush: {
+          notification: {
+            icon: '/icon-192x192.png',
+            badge: '/badge.png',
+          },
+        },
+      };
+
+      const promise = admin.messaging().send(message)
+        .then(async (response) => {
+          console.log(`✅ Notificação enviada para ${userId}: ${response}`);
+          await incrementRateLimitCounter(userId);
+          return response;
+        })
+        .catch((error) => {
+          console.error(`❌ Erro ao enviar notificação para ${userId}:`, error);
+
+          if (error.code === 'messaging/invalid-registration-token' ||
+              error.code === 'messaging/registration-token-not-registered') {
+            console.log(`🗑️ Removendo FCM token inválido de ${userId}`);
+            return admin.firestore()
+              .collection('users')
+              .doc(userId)
+              .update({ fcmToken: admin.firestore.FieldValue.delete() });
+          }
+
+          return null;
+        });
+
+      notificationPromises.push(promise);
+    }
+
+    await Promise.all(notificationPromises);
+
+    const batch = admin.firestore().batch();
+    messagesSnapshot.forEach(doc => {
+      batch.update(doc.ref, { notificationSent: true });
+    });
+    await batch.commit();
+
+    console.log(`✅ Processamento concluído: ${notificationPromises.length} notificações enviadas`);
+    console.log(`📝 ${messagesSnapshot.size} mensagens marcadas como notificadas`);
+
+    return null;
+
+  } catch (error) {
+    console.error('❌ Erro crítico ao processar notificações em lote:', error);
+    return null;
+  }
+});
+
+exports.resetDailyNotificationCounters = onSchedule({
+  schedule: 'every day 00:00',
+  timeZone: 'America/Sao_Paulo',
+}, async (event) => {
+  console.log('🧹 Limpando contadores diários de notificação...');
+
+  try {
+    const usersSnapshot = await admin.firestore()
+      .collection('users')
+      .get();
+
+    const batch = admin.firestore().batch();
+    let count = 0;
+
+    usersSnapshot.forEach(doc => {
+      batch.update(doc.ref, {
+        'notificationCount.today': 0,
+        'notificationCount.lastUpdate': admin.firestore.FieldValue.serverTimestamp(),
+      });
+      count++;
+    });
+
+    await batch.commit();
+    console.log(`✅ Contadores resetados para ${count} usuários`);
+
+    return null;
+  } catch (error) {
+    console.error('❌ Erro ao resetar contadores:', error);
+    return null;
+  }
+});
+
+exports.sendChatDigestEmail = onSchedule({
+  schedule: '0 9,17 * * *',
+  timeZone: 'America/Sao_Paulo',
+  memory: '128MiB',
+  timeoutSeconds: 300
+}, async (event) => {
+  try {
+    console.log('📧 [sendChatDigestEmail] Iniciando envio de digest...');
+
+    const db = admin.firestore();
+    const now = admin.firestore.Timestamp.now();
+    const twelveHoursAgo = new Date(now.toDate().getTime() - (12 * 60 * 60 * 1000));
+
+    const usersSnapshot = await db.collection('users')
+      .where('emailNotifications', '==', true)
+      .get();
+
+    if (usersSnapshot.empty) {
+      console.log('Nenhum usuário com notificações por email');
+      return null;
+    }
+
+    let emailsSent = 0;
+    let errors = 0;
+
+    for (const userDoc of usersSnapshot.docs) {
+      try {
+        const userData = userDoc.data();
+        const userId = userDoc.id;
+        const userEmail = userData.email;
+
+        if (!userEmail) continue;
+
+        const lastAccess = userData.lastAccess?.toDate() || new Date(0);
+        if (lastAccess > twelveHoursAgo) {
+          console.log(`⏭️  User ${userId} acessou recentemente, pulando`);
+          continue;
+        }
+
+        const unreadMessagesSnapshot = await db.collection('chat_messages')
+          .where('timestamp', '>', admin.firestore.Timestamp.fromDate(twelveHoursAgo))
+          .where('userId', '!=', userId)
+          .orderBy('userId')
+          .orderBy('timestamp', 'desc')
+          .limit(100)
+          .get();
+
+        if (unreadMessagesSnapshot.empty) {
+          console.log(`📭 Nenhuma mensagem não lida para ${userId}`);
+          continue;
+        }
+
+        const unreadCount = unreadMessagesSnapshot.size;
+        const recentMessages = unreadMessagesSnapshot.docs.slice(0, 5);
+
+        const messagesHtml = recentMessages.map(doc => {
+          const msg = doc.data();
+          return `
+            <div style="padding: 12px; margin: 8px 0; background-color: #0f1419; border-left: 3px solid #00ff88; border-radius: 4px;">
+              <div style="font-weight: bold; color: #00ff88; margin-bottom: 4px;">${msg.userName || 'Usuário'}</div>
+              <div style="color: #ccc;">${msg.text || ''}</div>
+              <div style="color: #666; font-size: 12px; margin-top: 4px;">${msg.timestamp?.toDate().toLocaleString('pt-BR') || ''}</div>
+            </div>
+          `;
+        }).join('');
+
+        const moreMessages = unreadCount > 5 ? `<p style="color: #888; text-align: center; margin: 16px 0;">E mais ${unreadCount - 5} mensagens...</p>` : '';
+
+        const htmlContent = `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+              body {
+                font-family: Arial, sans-serif;
+                background-color: #0f1419;
+                color: #ffffff;
+                padding: 20px;
+                margin: 0;
+              }
+              .container {
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #1a1f26;
+                border-radius: 12px;
+                padding: 24px;
+              }
+              .header {
+                text-align: center;
+                margin-bottom: 24px;
+              }
+              .logo {
+                color: #00ff88;
+                font-size: 24px;
+                font-weight: bold;
+                margin-bottom: 8px;
+              }
+              .subtitle {
+                color: #888;
+                font-size: 14px;
+              }
+              .badge {
+                display: inline-block;
+                background-color: #00ff88;
+                color: #000;
+                padding: 4px 12px;
+                border-radius: 12px;
+                font-weight: bold;
+                font-size: 14px;
+              }
+              .button {
+                display: inline-block;
+                background-color: #00ff88;
+                color: #000;
+                padding: 12px 24px;
+                border-radius: 8px;
+                text-decoration: none;
+                font-weight: bold;
+                margin-top: 16px;
+              }
+              .footer {
+                text-align: center;
+                margin-top: 24px;
+                color: #666;
+                font-size: 12px;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <div class="logo">AlanoCryptoFX</div>
+                <div class="subtitle">💬 Resumo do Chat</div>
+              </div>
+
+              <p style="color: #fff; font-size: 16px;">
+                Você tem <span class="badge">${unreadCount} ${unreadCount === 1 ? 'mensagem não lida' : 'mensagens não lidas'}</span> na comunidade!
+              </p>
+
+              <p style="color: #ccc; margin: 16px 0;">
+                Últimas mensagens:
+              </p>
+
+              ${messagesHtml}
+              ${moreMessages}
+
+              <center>
+                <a href="https://alanocryptofx.com.br" class="button">Abrir App</a>
+              </center>
+
+              <div class="footer">
+                <p>Você recebe este resumo 2x ao dia (9h e 17h) quando há mensagens não lidas.</p>
+                <p>Para desativar, acesse as configurações do seu perfil no app.</p>
+                <p style="margin-top: 16px;">© 2025 AlanoCryptoFX. Todos os direitos reservados.</p>
+              </div>
+            </div>
+          </body>
+          </html>
+        `;
+
+        const { error } = await resend.emails.send({
+          from: EMAIL_FROM,
+          to: userEmail,
+          subject: `💬 Você tem ${unreadCount} ${unreadCount === 1 ? 'mensagem não lida' : 'mensagens não lidas'}`,
+          html: htmlContent,
+        });
+
+        if (error) {
+          console.error(`❌ Erro ao enviar para ${userEmail}:`, error);
+          errors++;
+        } else {
+          console.log(`✅ Email enviado para ${userEmail}`);
+          emailsSent++;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+      } catch (userError) {
+        console.error(`❌ Erro processando usuário:`, userError);
+        errors++;
+      }
+    }
+
+    console.log(`📊 [sendChatDigestEmail] Resumo: ${emailsSent} emails enviados, ${errors} erros`);
+    return null;
+
+  } catch (error) {
+    console.error('❌ [sendChatDigestEmail] Erro fatal:', error);
+    return null;
+  }
+});
+
+exports.migrateUserEmailFields = onRequest({
+  cors: true,
+  memory: '256MiB',
+  timeoutSeconds: 540
+}, async (req, res) => {
+  try {
+    console.log('🔄 Iniciando migração de campos de email...');
+
+    const usersRef = admin.firestore().collection('users');
+    const snapshot = await usersRef.get();
+
+    console.log(`📊 Total de usuários: ${snapshot.size}`);
+
+    let updated = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    const batch = admin.firestore().batch();
+    let batchCount = 0;
+
+    for (const doc of snapshot.docs) {
+      const userData = doc.data();
+      const userId = doc.id;
+
+      const updates = {};
+      let needsUpdate = false;
+
+      if (userData.emailNotifications === undefined) {
+        updates.emailNotifications = true;
+        needsUpdate = true;
+        console.log(`✅ ${userData.displayName || userId}: adicionando emailNotifications`);
+      }
+
+      if (!userData.notificationPreferences) {
+        updates.notificationPreferences = {
+          posts: true,
+          postsEmail: true,
+          signals: true,
+          signalsEmail: true,
+          mentions: true,
+          mentionsEmail: true,
+          chatMessages: false,
+          chatMessagesThrottle: {
+            enabled: true,
+            maxPerHour: 4,
+            batchInterval: 15
+          }
+        };
+        needsUpdate = true;
+        console.log(`✅ ${userData.displayName || userId}: adicionando notificationPreferences`);
+      } else {
+        const prefs = userData.notificationPreferences;
+        if (prefs.postsEmail === undefined) {
+          updates['notificationPreferences.postsEmail'] = true;
+          needsUpdate = true;
+        }
+        if (prefs.signalsEmail === undefined) {
+          updates['notificationPreferences.signalsEmail'] = true;
+          needsUpdate = true;
+        }
+        if (prefs.mentionsEmail === undefined) {
+          updates['notificationPreferences.mentionsEmail'] = true;
+          needsUpdate = true;
+        }
+        if (needsUpdate) {
+          console.log(`✅ ${userData.displayName || userId}: adicionando campos *Email`);
+        }
+      }
+
+      if (needsUpdate) {
+        batch.update(doc.ref, updates);
+        batchCount++;
+        updated++;
+
+        if (batchCount >= 500) {
+          await batch.commit();
+          console.log(`💾 Batch commit: ${batchCount} documentos`);
+          batchCount = 0;
+        }
+      } else {
+        skipped++;
+      }
+    }
+
+    if (batchCount > 0) {
+      await batch.commit();
+      console.log(`💾 Batch commit final: ${batchCount} documentos`);
+    }
+
+    const result = {
+      success: true,
+      totalUsers: snapshot.size,
+      updated: updated,
+      skipped: skipped,
+      errors: errors,
+      message: `Migração concluída: ${updated} atualizados, ${skipped} já tinham os campos`
+    };
+
+    console.log('✅ Migração concluída:', result);
+    return res.json(result);
+
+  } catch (error) {
+    console.error('❌ Erro na migração:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
