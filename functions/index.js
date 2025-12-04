@@ -767,8 +767,13 @@ exports.onChatMessageCreated = onDocumentCreated({
   memory: '128MiB',
   timeoutSeconds: 60
 }, async (event) => {
+  console.log('🔥🔥🔥 [DEBUG] onChatMessageCreated DISPAROU!');
+
   const messageId = event.params.messageId;
   const messageData = event.data.data();
+
+  console.log('🔥 Message ID:', messageId);
+  console.log('🔥 Message data:', JSON.stringify(messageData));
 
   console.log(`💬 [CHAT] Nova mensagem criada: ${messageId}`);
 
@@ -3214,9 +3219,9 @@ exports.sendBatchedChatNotifications = onSchedule({
 
     const messagesSnapshot = await admin.firestore()
       .collection('chat_messages')
-      .where('createdAt', '>=', fifteenMinAgo)
+      .where('timestamp', '>=', fifteenMinAgo)
       .where('notificationSent', '==', false)
-      .orderBy('createdAt', 'desc')
+      .orderBy('timestamp', 'desc')
       .limit(100)
       .get();
 
