@@ -764,8 +764,8 @@ exports.onAlanoPostCreated = onDocumentCreated({
 
 exports.onChatMessageCreated = onDocumentCreated({
   document: 'chat_messages/{messageId}',
-  memory: '128MiB',
-  timeoutSeconds: 60
+  memory: '256MiB',
+  timeoutSeconds: 120
 }, async (event) => {
   console.log('🔥🔥🔥 [DEBUG] onChatMessageCreated DISPAROU!');
 
