@@ -3271,13 +3271,6 @@ exports.sendBatchedChatNotifications = onSchedule({
     const notificationPromises = [];
 
     for (const userId of usersToNotify) {
-      const canSend = await checkRateLimit(userId, 4);
-
-      if (!canSend) {
-        console.log(`⏸️ Pulando ${userId} - rate limit atingido`);
-        continue;
-      }
-
       const userInfo = userPrefs[userId];
       const message = {
         token: userInfo.fcmToken,
@@ -3316,9 +3309,8 @@ exports.sendBatchedChatNotifications = onSchedule({
       };
 
       const promise = admin.messaging().send(message)
-        .then(async (response) => {
+        .then((response) => {
           console.log(`✅ Notificação enviada para ${userId}: ${response}`);
-          await incrementRateLimitCounter(userId);
           return response;
         })
         .catch((error) => {
