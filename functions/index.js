@@ -3693,3 +3693,121 @@ exports.migrateUserEmailFields = onRequest({
     });
   }
 });
+
+exports.processTelegramSignal = onRequest({
+  memory: '256MiB',
+  timeoutSeconds: 60,
+  cors: true
+}, async (req, res) => {
+  console.log('🤖 [processTelegramSignal] Recebendo sinal do Telegram...');
+
+  try {
+    if (req.method !== 'POST') {
+      return res.status(405).json({
+        success: false,
+        error: 'Método não permitido. Use POST.'
+      });
+    }
+
+    const { coin, type, entry, strategy, rsiValue, timeframe, status, confidence } = req.body;
+
+    console.log('📊 Dados do sinal:', {
+      coin,
+      type,
+      entry,
+      strategy,
+      rsiValue,
+      timeframe,
+      status,
+      confidence
+    });
+
+    if (!coin || !type || !entry || !strategy || !rsiValue || !timeframe) {
+      console.error('❌ Dados incompletos');
+      return res.status(400).json({
+        success: false,
+        error: 'Dados incompletos. Campos obrigatórios: coin, type, entry, strategy, rsiValue, timeframe'
+      });
+    }
+
+    const signalData = {
+      coin,
+      type,
+      entry,
+      strategy,
+      rsiValue,
+      timeframe,
+      status: status || 'Ativo',
+      confidence: confidence || 'Alta',
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    console.log('💾 Salvando sinal no Firestore...');
+    const signalRef = await admin.firestore().collection('signals').add(signalData);
+    console.log('✅ Sinal salvo com ID:', signalRef.id);
+
+    console.log('📲 Enviando notificação FCM para todos os usuários...');
+    const usersSnapshot = await admin.firestore().collection('users').get();
+    const tokens = [];
+
+    usersSnapshot.forEach(doc => {
+      const userData = doc.data();
+      if (userData.fcmToken) {
+        tokens.push(userData.fcmToken);
+      }
+    });
+
+    console.log(`📱 ${tokens.length} tokens encontrados`);
+
+    if (tokens.length > 0) {
+      const typeEmoji = type === 'LONG' ? '🟢' : '🔴';
+      const typeText = type === 'LONG' ? 'COMPRA' : 'VENDA';
+
+      const message = {
+        notification: {
+          title: `${typeEmoji} Novo Sinal: ${coin}`,
+          body: `${typeText} em ${entry} | ${strategy}`
+        },
+        data: {
+          signalId: signalRef.id,
+          coin: coin,
+          type: type,
+          entry: entry,
+          strategy: strategy,
+          rsiValue: rsiValue,
+          timeframe: timeframe
+        },
+        tokens: tokens
+      };
+
+      const response = await admin.messaging().sendEachForMulticast(message);
+      console.log(`✅ Notificações enviadas: ${response.successCount} sucesso, ${response.failureCount} falhas`);
+
+      if (response.failureCount > 0) {
+        const failedTokens = [];
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success) {
+            failedTokens.push(tokens[idx]);
+            console.error('❌ Falha ao enviar para:', tokens[idx], resp.error);
+          }
+        });
+      }
+    } else {
+      console.log('⚠️ Nenhum token FCM encontrado');
+    }
+
+    return res.json({
+      success: true,
+      signalId: signalRef.id,
+      notificationsSent: tokens.length,
+      message: 'Sinal processado com sucesso'
+    });
+
+  } catch (error) {
+    console.error('❌ Erro ao processar sinal:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});

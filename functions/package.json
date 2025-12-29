@@ -19,6 +19,7 @@
     "resend": "^6.4.1",
     "axios": "^1.6.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
   }
 }
