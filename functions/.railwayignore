@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.env.local
+test-*.js
+test-*.py
+*.session
+__pycache__/
+*.pyc
+telegram-bot.js

@@ -11,3 +11,8 @@ npm-debug.log*
 
 # Firebase cache
 .firebase/
+
+# Python
+*.session
+__pycache__/
+*.pyc
