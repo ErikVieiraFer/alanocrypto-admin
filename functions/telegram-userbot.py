@@ -3,9 +3,8 @@ import re
 import json
 import asyncio
 import requests
-import base64
-from pathlib import Path
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,7 +26,9 @@ if not CLOUD_FUNCTION_URL:
     print('❌ CLOUD_FUNCTION_URL não configurado no .env')
     exit(1)
 
-client = TelegramClient('alanocrypto_session', API_ID, API_HASH)
+STRING_SESSION = os.getenv('TELEGRAM_STRING_SESSION', '')
+session = StringSession(STRING_SESSION) if STRING_SESSION else 'alanocrypto_session'
+client = TelegramClient(session, API_ID, API_HASH)
 
 metrics = {
     'total_messages': 0,
@@ -35,21 +36,6 @@ metrics = {
     'signals_parsed': 0,
     'signals_failed': 0
 }
-
-def restore_session_from_env():
-    session_b64 = os.getenv('TELEGRAM_SESSION_BASE64')
-    if not session_b64:
-        return False
-
-    try:
-        session_data = base64.b64decode(session_b64)
-        session_file = Path('alanocrypto_session.session')
-        session_file.write_bytes(session_data)
-        print('✅ Sessão restaurada da variável de ambiente')
-        return True
-    except Exception as e:
-        print(f'❌ Erro ao restaurar sessão: {e}')
-        return False
 
 def normalize_text(text):
     return text.replace(''', "'").replace(''', "'").strip()
@@ -324,8 +310,6 @@ async def main():
     print('🤖 Telegram Userbot iniciado!')
     print(f'📡 Monitorando canal: {CHANNEL_ID}')
     print(f'🔗 Cloud Function URL: {CLOUD_FUNCTION_URL}')
-
-    restore_session_from_env()
 
     await client.start()
     print('✅ Cliente conectado! Aguardando mensagens...\n')
