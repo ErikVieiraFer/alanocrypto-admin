@@ -3803,3 +3803,53 @@ exports.processTelegramSignal = onRequest({
     });
   }
 });
+
+// ═══════════════════════════════════════════════════════════
+// LIMPEZA AUTOMÁTICA DE SINAIS ANTIGOS (> 1 hora)
+// ═══════════════════════════════════════════════════════════
+
+exports.cleanupOldSignals = onSchedule({
+  schedule: 'every 15 minutes',
+  timeZone: 'America/Sao_Paulo',
+  memory: '256MiB',
+  timeoutSeconds: 120
+}, async (event) => {
+  try {
+    console.log('🧹 Iniciando limpeza de sinais antigos...');
+
+    const oneHourAgo = new Date();
+    oneHourAgo.setHours(oneHourAgo.getHours() - 1);
+
+    const db = admin.firestore();
+    const signalsRef = db.collection('signals');
+
+    const oldSignalsSnapshot = await signalsRef
+      .where('createdAt', '<', admin.firestore.Timestamp.fromDate(oneHourAgo))
+      .get();
+
+    if (oldSignalsSnapshot.empty) {
+      console.log('✅ Nenhum sinal antigo para deletar');
+      return null;
+    }
+
+    console.log(`🗑️ Encontrados ${oldSignalsSnapshot.size} sinais para deletar`);
+
+    const batch = db.batch();
+    let deletedCount = 0;
+
+    oldSignalsSnapshot.forEach(doc => {
+      console.log(`  ❌ Deletando sinal: ${doc.id} - ${doc.data().coin} (${doc.data().createdAt.toDate()})`);
+      batch.delete(doc.ref);
+      deletedCount++;
+    });
+
+    await batch.commit();
+
+    console.log(`✅ ${deletedCount} sinais deletados com sucesso`);
+    return null;
+
+  } catch (error) {
+    console.error('❌ Erro ao limpar sinais antigos:', error);
+    return null;
+  }
+});
