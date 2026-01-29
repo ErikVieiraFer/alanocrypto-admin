@@ -3803,3 +3803,344 @@ exports.processTelegramSignal = onRequest({
     });
   }
 });
+
+// ═══════════════════════════════════════════════════════════
+// MERCADO PAGO - SISTEMA DE PAGAMENTO A CÚPULA
+// ═══════════════════════════════════════════════════════════
+
+const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
+const MP_SUBSCRIPTION_PRICE = 149.90;
+
+exports.createSubscription = onRequest({
+  memory: '256MiB',
+  timeoutSeconds: 30
+}, async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(204).send('');
+  }
+
+  if (!MP_ACCESS_TOKEN) {
+    console.error('❌ ERRO CRÍTICO: MP_ACCESS_TOKEN não configurado');
+    return res.status(500).json({
+      success: false,
+      error: 'CONFIG_ERROR',
+      message: 'Serviço temporariamente indisponível. Tente novamente mais tarde.'
+    });
+  }
+
+  try {
+    console.log('💳 [createSubscription] Iniciando...');
+
+    if (req.method !== 'POST') {
+      return res.status(405).json({
+        success: false,
+        error: 'METHOD_ERROR',
+        message: 'Método não permitido'
+      });
+    }
+
+    const { userId, userEmail, userName } = req.body;
+
+    if (!userId || !userEmail) {
+      console.error('❌ userId ou userEmail não fornecidos');
+      return res.status(400).json({
+        success: false,
+        error: 'VALIDATION_ERROR',
+        message: 'Dados de usuário incompletos. Faça login novamente.'
+      });
+    }
+
+    console.log('👤 UserId:', userId);
+    console.log('📧 Email:', userEmail);
+
+    const preferenceData = {
+      items: [
+        {
+          title: 'Assinatura A Cúpula - AlanoCryptoFX',
+          quantity: 1,
+          unit_price: MP_SUBSCRIPTION_PRICE,
+          currency_id: 'BRL'
+        }
+      ],
+      payer: {
+        email: userEmail,
+        name: userName || 'Usuário'
+      },
+      back_urls: {
+        success: 'https://alanocryptofx.com.br/pagamento/sucesso',
+        failure: 'https://alanocryptofx.com.br/pagamento/erro',
+        pending: 'https://alanocryptofx.com.br/pagamento/pendente'
+      },
+      auto_return: 'approved',
+      external_reference: userId,
+      notification_url: 'https://us-central1-alanocryptofx-v2.cloudfunctions.net/mercadoPagoWebhook',
+      statement_descriptor: 'ALANOCRYPTO',
+      expires: false
+    };
+
+    console.log('📤 Enviando para Mercado Pago...');
+
+    const response = await axios.post(
+      'https://api.mercadopago.com/checkout/preferences',
+      preferenceData,
+      {
+        headers: {
+          'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    console.log('✅ Preferência criada:', response.data.id);
+
+    await admin.firestore().collection('payment_preferences').doc(response.data.id).set({
+      userId,
+      userEmail,
+      userName: userName || null,
+      preferenceId: response.data.id,
+      checkoutUrl: response.data.init_point,
+      sandboxUrl: response.data.sandbox_init_point,
+      amount: MP_SUBSCRIPTION_PRICE,
+      status: 'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return res.json({
+      success: true,
+      checkoutUrl: response.data.init_point,
+      sandboxUrl: response.data.sandbox_init_point,
+      preferenceId: response.data.id
+    });
+
+  } catch (error) {
+    console.error('❌ Erro Mercado Pago:', error.response?.data || error.message);
+    return res.status(500).json({
+      success: false,
+      error: 'PAYMENT_ERROR',
+      message: 'Erro ao processar pagamento. Tente novamente ou entre em contato com o suporte.'
+    });
+  }
+});
+
+exports.mercadoPagoWebhook = onRequest({
+  memory: '256MiB',
+  timeoutSeconds: 60
+}, async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(204).send('');
+  }
+
+  try {
+    console.log('🔔 [mercadoPagoWebhook] Notificação recebida');
+    console.log('📦 Body:', JSON.stringify(req.body, null, 2));
+    console.log('🔍 Query:', JSON.stringify(req.query, null, 2));
+
+    const { type, data, action } = req.body;
+    const paymentId = data?.id || req.query.id || req.query['data.id'];
+
+    console.log('📋 Tipo:', type);
+    console.log('🎬 Ação:', action);
+    console.log('🆔 Payment ID:', paymentId);
+
+    await admin.firestore().collection('mp_webhooks').add({
+      type,
+      action,
+      paymentId,
+      rawBody: req.body,
+      rawQuery: req.query,
+      receivedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    if (type === 'payment' && paymentId) {
+      console.log('💰 Processando pagamento:', paymentId);
+
+      const paymentResponse = await axios.get(
+        `https://api.mercadopago.com/v1/payments/${paymentId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${MP_ACCESS_TOKEN}`
+          }
+        }
+      );
+
+      const payment = paymentResponse.data;
+      console.log('📄 Detalhes do pagamento:', JSON.stringify(payment, null, 2));
+
+      const userId = payment.external_reference;
+      const status = payment.status;
+      const statusDetail = payment.status_detail;
+
+      console.log('👤 UserId:', userId);
+      console.log('📊 Status:', status);
+      console.log('📝 Detalhe:', statusDetail);
+
+      if (!userId) {
+        console.error('❌ external_reference (userId) não encontrado no pagamento');
+        return res.status(200).send('OK - userId não encontrado');
+      }
+
+      await admin.firestore().collection('payment_history').add({
+        userId,
+        paymentId: payment.id.toString(),
+        status,
+        statusDetail,
+        amount: payment.transaction_amount,
+        paymentMethod: payment.payment_method_id,
+        payerEmail: payment.payer?.email,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        mpCreatedAt: payment.date_created,
+        mpApprovedAt: payment.date_approved
+      });
+
+      const userRef = admin.firestore().collection('users').doc(userId);
+
+      if (status === 'approved') {
+        console.log('✅ Pagamento aprovado! Ativando premium para:', userId);
+
+        const premiumUntil = new Date();
+        premiumUntil.setDate(premiumUntil.getDate() + 30);
+
+        await userRef.update({
+          isPremium: true,
+          premiumUntil: admin.firestore.Timestamp.fromDate(premiumUntil),
+          lastPaymentId: payment.id.toString(),
+          lastPaymentDate: admin.firestore.FieldValue.serverTimestamp(),
+          lastPaymentStatus: status,
+          subscriptionActive: true
+        });
+
+        console.log('🎉 Premium ativado até:', premiumUntil.toISOString());
+
+        try {
+          await admin.firestore().collection('notifications').add({
+            userId,
+            title: '🎉 Bem-vindo à Cúpula!',
+            body: 'Seu pagamento foi aprovado. Você agora tem acesso a todo o conteúdo exclusivo!',
+            type: 'payment_approved',
+            read: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+        } catch (notifError) {
+          console.error('⚠️ Erro ao criar notificação:', notifError);
+        }
+
+      } else if (status === 'rejected' || status === 'cancelled' || status === 'refunded') {
+        console.log('❌ Pagamento rejeitado/cancelado/reembolsado:', status);
+
+        await userRef.update({
+          lastPaymentId: payment.id.toString(),
+          lastPaymentDate: admin.firestore.FieldValue.serverTimestamp(),
+          lastPaymentStatus: status
+        });
+
+      } else if (status === 'pending' || status === 'in_process') {
+        console.log('⏳ Pagamento pendente:', status);
+
+        await userRef.update({
+          lastPaymentId: payment.id.toString(),
+          lastPaymentDate: admin.firestore.FieldValue.serverTimestamp(),
+          lastPaymentStatus: status
+        });
+      }
+    }
+
+    return res.status(200).send('OK');
+
+  } catch (error) {
+    console.error('❌ Erro no webhook:', error);
+    return res.status(200).send('OK - Erro processado');
+  }
+});
+
+exports.checkSubscriptionStatus = onCall({
+  memory: '128MiB',
+  timeoutSeconds: 30
+}, async (request) => {
+  try {
+    const userId = request.auth?.uid;
+
+    if (!userId) {
+      throw new Error('Usuário não autenticado');
+    }
+
+    const userDoc = await admin.firestore().collection('users').doc(userId).get();
+
+    if (!userDoc.exists) {
+      return { isPremium: false, message: 'Usuário não encontrado' };
+    }
+
+    const userData = userDoc.data();
+    const isPremium = userData.isPremium === true;
+    const premiumUntil = userData.premiumUntil?.toDate();
+
+    if (isPremium && premiumUntil) {
+      const now = new Date();
+      if (premiumUntil < now) {
+        await admin.firestore().collection('users').doc(userId).update({
+          isPremium: false,
+          subscriptionActive: false
+        });
+        return {
+          isPremium: false,
+          message: 'Assinatura expirada',
+          expiredAt: premiumUntil.toISOString()
+        };
+      }
+    }
+
+    return {
+      isPremium,
+      premiumUntil: premiumUntil?.toISOString() || null,
+      subscriptionActive: userData.subscriptionActive || false,
+      lastPaymentStatus: userData.lastPaymentStatus || null
+    };
+
+  } catch (error) {
+    console.error('❌ Erro ao verificar status:', error);
+    throw new Error(error.message);
+  }
+});
+
+exports.activateAlanoAdmin = onRequest({
+  memory: '128MiB',
+  timeoutSeconds: 30
+}, async (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+
+  try {
+    const alanoUid = 'XHMsmRONXcOp3vm7VM3326P1DSt2';
+    const secretKey = req.query.key;
+
+    if (secretKey !== 'cupula2026') {
+      return res.status(403).json({ success: false, error: 'Acesso negado' });
+    }
+
+    const premiumUntil = new Date();
+    premiumUntil.setFullYear(premiumUntil.getFullYear() + 1);
+
+    await admin.firestore().collection('users').doc(alanoUid).update({
+      isPremium: true,
+      premiumUntil: admin.firestore.Timestamp.fromDate(premiumUntil),
+      manuallyActivated: true,
+      manuallyActivatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return res.json({
+      success: true,
+      message: 'Alano ativado como premium por 1 ano',
+      premiumUntil: premiumUntil.toISOString()
+    });
+
+  } catch (error) {
+    console.error('Erro:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});

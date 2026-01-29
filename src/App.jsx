@@ -11,8 +11,11 @@ import News from './pages/News';
 import NewsForm from './pages/NewsForm';
 import IntroVideo from './pages/IntroVideo';
 import Users from './pages/Users';
+import PremiumMembers from './pages/PremiumMembers';
 import Courses from './pages/Courses';
 import UsefulLinks from './pages/UsefulLinks';
+import CupulaPosts from './pages/CupulaPosts';
+import Lives from './pages/Lives';
 import LoadingSpinner from './components/LoadingSpinner';
 
 // Protected Route Component
@@ -159,6 +162,14 @@ function App() {
             }
           />
           <Route
+            path="/premium-members"
+            element={
+              <ProtectedRoute>
+                <PremiumMembers />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/courses"
             element={
               <ProtectedRoute>
@@ -171,6 +182,22 @@ function App() {
             element={
               <ProtectedRoute>
                 <UsefulLinks />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/cupula-posts"
+            element={
+              <ProtectedRoute>
+                <CupulaPosts />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/lives"
+            element={
+              <ProtectedRoute>
+                <Lives />
               </ProtectedRoute>
             }
           />
