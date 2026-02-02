@@ -3857,36 +3857,25 @@ exports.createSubscription = onRequest({
     console.log('👤 UserId:', userId);
     console.log('📧 Email:', userEmail);
 
-    const preferenceData = {
-      items: [
-        {
-          title: 'Assinatura A Cúpula - AlanoCryptoFX',
-          quantity: 1,
-          unit_price: MP_SUBSCRIPTION_PRICE,
-          currency_id: 'BRL'
-        }
-      ],
-      payer: {
-        email: userEmail,
-        name: userName || 'Usuário'
-      },
-      back_urls: {
-        success: 'https://alanocryptofx.com.br/pagamento/sucesso',
-        failure: 'https://alanocryptofx.com.br/pagamento/erro',
-        pending: 'https://alanocryptofx.com.br/pagamento/pendente'
-      },
-      auto_return: 'approved',
+    const subscriptionData = {
+      reason: 'A Cúpula - Membros Premium AlanoCryptoFX',
       external_reference: userId,
-      notification_url: 'https://us-central1-alanocryptofx-v2.cloudfunctions.net/mercadoPagoWebhook',
-      statement_descriptor: 'ALANOCRYPTO',
-      expires: false
+      payer_email: userEmail,
+      auto_recurring: {
+        frequency: 1,
+        frequency_type: 'months',
+        transaction_amount: MP_SUBSCRIPTION_PRICE,
+        currency_id: 'BRL'
+      },
+      back_url: 'https://alanocryptofx.com.br/pagamento/sucesso',
+      notification_url: 'https://us-central1-alanocryptofx-v2.cloudfunctions.net/mercadoPagoWebhook'
     };
 
-    console.log('📤 Enviando para Mercado Pago...');
+    console.log('📤 Criando assinatura no Mercado Pago...');
 
     const response = await axios.post(
-      'https://api.mercadopago.com/checkout/preferences',
-      preferenceData,
+      'https://api.mercadopago.com/preapproval',
+      subscriptionData,
       {
         headers: {
           'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
@@ -3895,25 +3884,24 @@ exports.createSubscription = onRequest({
       }
     );
 
-    console.log('✅ Preferência criada:', response.data.id);
+    console.log('✅ Assinatura criada:', response.data.id);
+    console.log('📊 Status:', response.data.status);
 
-    await admin.firestore().collection('payment_preferences').doc(response.data.id).set({
+    await admin.firestore().collection('subscriptions').doc(response.data.id).set({
       userId,
       userEmail,
       userName: userName || null,
-      preferenceId: response.data.id,
+      subscriptionId: response.data.id,
       checkoutUrl: response.data.init_point,
-      sandboxUrl: response.data.sandbox_init_point,
       amount: MP_SUBSCRIPTION_PRICE,
-      status: 'pending',
+      status: response.data.status,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
     return res.json({
       success: true,
       checkoutUrl: response.data.init_point,
-      sandboxUrl: response.data.sandbox_init_point,
-      preferenceId: response.data.id
+      subscriptionId: response.data.id
     });
 
   } catch (error) {
@@ -3958,6 +3946,102 @@ exports.mercadoPagoWebhook = onRequest({
       rawQuery: req.query,
       receivedAt: admin.firestore.FieldValue.serverTimestamp()
     });
+
+    if (type === 'subscription_preapproval' && paymentId) {
+      console.log('📋 Processando notificação de assinatura:', paymentId);
+
+      const subResponse = await axios.get(
+        `https://api.mercadopago.com/preapproval/${paymentId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${MP_ACCESS_TOKEN}`
+          }
+        }
+      );
+
+      const subscription = subResponse.data;
+      console.log('📄 Detalhes da assinatura:', JSON.stringify(subscription, null, 2));
+
+      const userId = subscription.external_reference;
+      const subscriptionStatus = subscription.status;
+
+      console.log('👤 UserId:', userId);
+      console.log('📊 Status:', subscriptionStatus);
+
+      if (!userId) {
+        console.error('❌ external_reference (userId) não encontrado na assinatura');
+        return res.status(200).send('OK - userId não encontrado');
+      }
+
+      const userRef = admin.firestore().collection('users').doc(userId);
+
+      await admin.firestore().collection('subscription_history').add({
+        userId,
+        subscriptionId: subscription.id,
+        status: subscriptionStatus,
+        payerEmail: subscription.payer_email,
+        amount: subscription.auto_recurring?.transaction_amount,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        mpCreatedAt: subscription.date_created
+      });
+
+      if (subscriptionStatus === 'authorized') {
+        console.log('✅ Assinatura autorizada! Ativando premium para:', userId);
+
+        await userRef.update({
+          isPremium: true,
+          subscriptionId: subscription.id,
+          subscriptionStatus: 'active',
+          subscriptionActive: true,
+          lastPaymentDate: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        try {
+          await admin.firestore().collection('notifications').add({
+            userId,
+            title: '🎉 Bem-vindo à Cúpula!',
+            body: 'Sua assinatura foi ativada. Você agora tem acesso a todo o conteúdo exclusivo!',
+            type: 'subscription_activated',
+            read: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+        } catch (notifError) {
+          console.error('⚠️ Erro ao criar notificação:', notifError);
+        }
+
+      } else if (subscriptionStatus === 'cancelled' || subscriptionStatus === 'paused') {
+        console.log('❌ Assinatura cancelada/pausada:', subscriptionStatus);
+
+        await userRef.update({
+          isPremium: false,
+          subscriptionStatus: subscriptionStatus,
+          subscriptionActive: false
+        });
+
+        try {
+          await admin.firestore().collection('notifications').add({
+            userId,
+            title: '⚠️ Assinatura cancelada',
+            body: 'Sua assinatura foi cancelada. Você não tem mais acesso ao conteúdo exclusivo.',
+            type: 'subscription_cancelled',
+            read: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+        } catch (notifError) {
+          console.error('⚠️ Erro ao criar notificação:', notifError);
+        }
+
+      } else if (subscriptionStatus === 'pending') {
+        console.log('⏳ Assinatura pendente:', subscriptionStatus);
+
+        await userRef.update({
+          subscriptionId: subscription.id,
+          subscriptionStatus: 'pending'
+        });
+      }
+
+      return res.status(200).send('OK');
+    }
 
     if (type === 'payment' && paymentId) {
       console.log('💰 Processando pagamento:', paymentId);
@@ -4143,4 +4227,97 @@ exports.activateAlanoAdmin = onRequest({
     console.error('Erro:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
+});
+
+exports.grantLifetimeAccess = onRequest({
+  memory: '512MiB',
+  timeoutSeconds: 300,
+  region: 'us-central1'
+}, async (req, res) => {
+  cors(req, res, async () => {
+    console.log('🔄 Iniciando migração de acesso vitalício...');
+
+    try {
+      const db = admin.firestore();
+      const usersRef = db.collection('users');
+      const snapshot = await usersRef.get();
+
+      let updatedCount = 0;
+      let alreadyLifetimeCount = 0;
+      let notApprovedCount = 0;
+      const errors = [];
+
+      console.log(`📊 Total de usuários encontrados: ${snapshot.size}`);
+
+      const BATCH_SIZE = 400;
+      let batch = db.batch();
+      let batchCount = 0;
+
+      for (const docSnapshot of snapshot.docs) {
+        const userData = docSnapshot.data();
+        const userId = docSnapshot.id;
+
+        if (userData.lifetimeAccess === true && !userData.accessUntil) {
+          alreadyLifetimeCount++;
+          continue;
+        }
+
+        if (userData.approved !== true) {
+          notApprovedCount++;
+          continue;
+        }
+
+        try {
+          batch.update(docSnapshot.ref, {
+            accessUntil: admin.firestore.FieldValue.delete(),
+            lifetimeAccess: true,
+            migratedToLifetimeAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+
+          updatedCount++;
+          batchCount++;
+
+          if (batchCount >= BATCH_SIZE) {
+            await batch.commit();
+            console.log(`✅ Batch de ${batchCount} usuários atualizado`);
+            batch = db.batch();
+            batchCount = 0;
+          }
+        } catch (error) {
+          errors.push({ userId, error: error.message });
+        }
+      }
+
+      if (batchCount > 0) {
+        await batch.commit();
+        console.log(`✅ Batch final de ${batchCount} usuários atualizado`);
+      }
+
+      const result = {
+        success: true,
+        message: 'Migração concluída com sucesso',
+        stats: {
+          total: snapshot.size,
+          updated: updatedCount,
+          alreadyLifetime: alreadyLifetimeCount,
+          notApproved: notApprovedCount,
+          errors: errors.length
+        }
+      };
+
+      if (errors.length > 0) {
+        result.errors = errors.slice(0, 10);
+      }
+
+      console.log('📊 Resultado:', JSON.stringify(result, null, 2));
+      return res.json(result);
+
+    } catch (error) {
+      console.error('❌ Erro na migração:', error);
+      return res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
 });

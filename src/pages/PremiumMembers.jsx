@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Crown, Search, CheckCircle, XCircle, Clock, Plus, Mail, Calendar, DollarSign, Users as UsersIcon, TrendingUp, Copy, UserPlus } from 'lucide-react';
+import { Crown, Search, CheckCircle, XCircle, Clock, Plus, Mail, Calendar, DollarSign, Users as UsersIcon, TrendingUp, Copy, UserPlus, Pencil } from 'lucide-react';
 import { collection, query, onSnapshot, doc, updateDoc, Timestamp, serverTimestamp } from 'firebase/firestore';
 import { db } from '../config/firebase';
 import toast from 'react-hot-toast';
@@ -68,6 +68,8 @@ export default function PremiumMembers() {
   const [addSearchTerm, setAddSearchTerm] = useState('');
   const [selectedPeriod, setSelectedPeriod] = useState(30);
   const [processingUserId, setProcessingUserId] = useState(null);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState(null);
 
   const PRICE = 149.90;
 
@@ -249,6 +251,17 @@ export default function PremiumMembers() {
     toast.success('UID copiado!');
   };
 
+  const openEditModal = (user) => {
+    setEditingUser(user);
+    setSelectedPeriod(30);
+    setEditModalOpen(true);
+  };
+
+  const closeEditModal = () => {
+    setEditModalOpen(false);
+    setEditingUser(null);
+  };
+
   const filteredUsers = useMemo(() => {
     return allUsers
       .filter(user => {
@@ -427,7 +440,7 @@ export default function PremiumMembers() {
                   <th className="px-6 py-3 text-left">Status</th>
                   <th className="px-6 py-3 text-left">Expira em</th>
                   <th className="px-6 py-3 text-left">Último Pagamento</th>
-                  <th className="px-6 py-3 text-center whitespace-nowrap" style={{ minWidth: '180px' }}>Ações</th>
+                  <th className="px-6 py-3 text-center min-w-[200px]">Ações</th>
                 </tr>
               </thead>
               <tbody>
@@ -511,22 +524,22 @@ export default function PremiumMembers() {
                           <span className="text-gray-500">-</span>
                         )}
                       </td>
-                      <td className="px-6 py-4" style={{ minWidth: '180px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center justify-center gap-2">
                           {isActive ? (
                             <>
                               <button
                                 onClick={() => openConfirmDialog(user, 'extend')}
                                 disabled={processingUserId === user.id}
-                                style={{ backgroundColor: '#2563eb', color: 'white', padding: '6px 12px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg flex items-center gap-1"
                               >
                                 <Plus size={14} />
-                                Estender
+                                +30d
                               </button>
                               <button
                                 onClick={() => openConfirmDialog(user, 'deactivate')}
                                 disabled={processingUserId === user.id}
-                                style={{ backgroundColor: '#dc2626', color: 'white', padding: '6px 12px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg flex items-center gap-1"
                               >
                                 <XCircle size={14} />
                                 Desativar
@@ -536,7 +549,7 @@ export default function PremiumMembers() {
                             <button
                               onClick={() => openConfirmDialog(user, 'activate')}
                               disabled={processingUserId === user.id}
-                              style={{ backgroundColor: '#ca8a04', color: 'white', padding: '6px 12px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '4px' }}
+                              className="px-3 py-1.5 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg flex items-center gap-1"
                             >
                               <TrendingUp size={14} />
                               Reativar
@@ -545,12 +558,19 @@ export default function PremiumMembers() {
                             <button
                               onClick={() => openConfirmDialog(user, 'activate')}
                               disabled={processingUserId === user.id}
-                              style={{ backgroundColor: '#16a34a', color: 'white', padding: '6px 12px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '12px', fontWeight: '500', display: 'flex', alignItems: 'center', gap: '4px' }}
+                              className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs font-medium rounded-lg flex items-center gap-1"
                             >
                               <CheckCircle size={14} />
                               Ativar
                             </button>
                           )}
+                          <button
+                            onClick={() => openEditModal(user)}
+                            className="px-2 py-1.5 bg-gray-600 hover:bg-gray-700 text-white rounded-lg"
+                            title="Editar"
+                          >
+                            <Pencil size={14} />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -740,6 +760,103 @@ export default function PremiumMembers() {
               : `Estender premium de ${confirmDialog.user?.email} por mais ${selectedPeriod} dias?`
           }
         />
+
+        <Modal
+          isOpen={editModalOpen}
+          onClose={closeEditModal}
+          title="Gerenciar Premium"
+          size="md"
+        >
+          {editingUser && (
+            <div className="space-y-6">
+              <div className="flex items-center gap-4 p-4 bg-gray-800 rounded-lg">
+                <UserAvatar user={editingUser} size="lg" />
+                <div>
+                  <p className="text-white font-medium text-lg">{editingUser.displayName}</p>
+                  <p className="text-gray-400">{editingUser.email}</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    {isPremiumActive(editingUser) ? (
+                      <span className="text-green-400 text-sm flex items-center gap-1">
+                        <CheckCircle size={14} />
+                        Premium até {getPremiumDateText(editingUser)}
+                      </span>
+                    ) : isPremiumExpired(editingUser) ? (
+                      <span className="text-red-400 text-sm flex items-center gap-1">
+                        <XCircle size={14} />
+                        Expirado em {getPremiumDateText(editingUser)}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400 text-sm flex items-center gap-1">
+                        <XCircle size={14} />
+                        Não Premium
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-gray-400 text-sm mb-2">Período</label>
+                <div className="flex gap-2 flex-wrap">
+                  {PERIOD_OPTIONS.map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setSelectedPeriod(opt.value)}
+                      className={`px-4 py-2 rounded-lg text-sm transition-colors ${
+                        selectedPeriod === opt.value
+                          ? 'bg-yellow-500 text-black font-semibold'
+                          : 'bg-gray-700 text-white hover:bg-gray-600'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                {isPremiumActive(editingUser) ? (
+                  <>
+                    <button
+                      onClick={() => {
+                        handleExtendPremium(editingUser.id, editingUser.email, editingUser.premiumUntil, selectedPeriod);
+                        closeEditModal();
+                      }}
+                      disabled={processingUserId === editingUser.id}
+                      className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium rounded-lg flex items-center justify-center gap-2"
+                    >
+                      <Plus size={18} />
+                      Estender por {selectedPeriod} dias
+                    </button>
+                    <button
+                      onClick={() => {
+                        handleDeactivatePremium(editingUser.id, editingUser.email);
+                        closeEditModal();
+                      }}
+                      disabled={processingUserId === editingUser.id}
+                      className="w-full py-3 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-medium rounded-lg flex items-center justify-center gap-2"
+                    >
+                      <XCircle size={18} />
+                      Desativar Premium
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => {
+                      handleActivatePremium(editingUser.id, editingUser.email, selectedPeriod);
+                      closeEditModal();
+                    }}
+                    disabled={processingUserId === editingUser.id}
+                    className="w-full py-3 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-medium rounded-lg flex items-center justify-center gap-2"
+                  >
+                    <Crown size={18} />
+                    Ativar Premium por {selectedPeriod} dias
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+        </Modal>
       </div>
     </Layout>
   );
