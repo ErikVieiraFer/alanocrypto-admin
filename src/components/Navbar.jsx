@@ -52,7 +52,7 @@ const Navbar = () => {
 
   return (
     <>
-      <nav className="lg:hidden bg-card shadow-lg border-b border-gray-700 fixed top-0 left-0 right-0 z-50">
+      <nav className="lg:hidden bg-[#0f0f0f] shadow-lg border-b border-gray-700 fixed top-0 left-0 right-0 z-50">
         <div className="px-4">
           <div className="flex justify-between items-center h-14">
             <Link to="/" className="flex items-center space-x-2">
@@ -69,50 +69,77 @@ const Navbar = () => {
             </button>
           </div>
         </div>
-
-        {isMenuOpen && (
-          <div className="border-t border-gray-700 bg-card max-h-[calc(100vh-56px)] overflow-y-auto">
-            <div className="px-2 pt-2 pb-3 space-y-1">
-              {navigation.map((item) => {
-                const Icon = item.icon;
-                const isUsersPage = item.path === '/users';
-                return (
-                  <Link
-                    key={item.path}
-                    to={item.path}
-                    onClick={() => setIsMenuOpen(false)}
-                    className={`flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
-                      isActive(item.path)
-                        ? 'bg-white text-black'
-                        : 'text-gray-300 hover:bg-gray-700 hover:text-white'
-                    }`}
-                  >
-                    <Icon size={20} />
-                    <span>{item.name}</span>
-                    {isUsersPage && pendingCount > 0 && (
-                      <span className="ml-auto bg-yellow-500 text-black px-2 py-0.5 rounded-full text-xs font-bold">
-                        {pendingCount}
-                      </span>
-                    )}
-                  </Link>
-                );
-              })}
-              <button
-                onClick={() => {
-                  handleSignOut();
-                  setIsMenuOpen(false);
-                }}
-                className="w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-300 hover:bg-red-600 hover:text-white transition-colors"
-              >
-                <LogOut size={20} />
-                <span>Sair</span>
-              </button>
-            </div>
-          </div>
-        )}
       </nav>
 
-      <aside className={`hidden lg:flex flex-col fixed top-0 left-0 h-screen bg-card border-r border-gray-700 transition-all duration-300 z-50 ${
+      {isMenuOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 lg:hidden"
+          onClick={() => setIsMenuOpen(false)}
+        />
+      )}
+
+      <aside className={`
+        fixed top-0 left-0 h-full w-64
+        bg-[#0f0f0f] border-r border-gray-700
+        z-50 lg:hidden
+        transform transition-transform duration-300 ease-in-out
+        ${isMenuOpen ? 'translate-x-0' : '-translate-x-full'}
+        overflow-y-auto
+      `}>
+        <div className="flex items-center justify-between h-14 px-4 border-b border-gray-700">
+          <Link to="/" className="flex items-center space-x-2" onClick={() => setIsMenuOpen(false)}>
+            <div className="bg-black rounded-lg p-1.5">
+              <TrendingUp className="h-5 w-5 text-white" />
+            </div>
+            <span className="text-lg font-bold text-white">Admin</span>
+          </Link>
+          <button
+            onClick={() => setIsMenuOpen(false)}
+            className="text-gray-300 hover:text-white p-1"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="px-2 py-4 space-y-1">
+          {navigation.map((item) => {
+            const Icon = item.icon;
+            const isUsersPage = item.path === '/users';
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                onClick={() => setIsMenuOpen(false)}
+                className={`flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
+                  isActive(item.path)
+                    ? 'bg-white text-black'
+                    : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+                }`}
+              >
+                <Icon size={20} />
+                <span>{item.name}</span>
+                {isUsersPage && pendingCount > 0 && (
+                  <span className="ml-auto bg-yellow-500 text-black px-2 py-0.5 rounded-full text-xs font-bold">
+                    {pendingCount}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+          <button
+            onClick={() => {
+              handleSignOut();
+              setIsMenuOpen(false);
+            }}
+            className="w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-300 hover:bg-red-600 hover:text-white transition-colors"
+          >
+            <LogOut size={20} />
+            <span>Sair</span>
+          </button>
+        </div>
+      </aside>
+
+      <aside className={`hidden lg:flex flex-col fixed top-0 left-0 h-screen bg-[#0f0f0f] border-r border-gray-700 transition-all duration-300 z-50 ${
         isSidebarCollapsed ? 'w-16' : 'w-56'
       }`}>
         <div className={`flex items-center h-16 border-b border-gray-700 ${isSidebarCollapsed ? 'justify-center px-2' : 'px-4'}`}>
@@ -186,8 +213,6 @@ const Navbar = () => {
           {isSidebarCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
         </button>
       </aside>
-
-      <div className="lg:hidden h-14" />
     </>
   );
 };
